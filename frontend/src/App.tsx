@@ -903,16 +903,30 @@ export default function App() {
           </section>
 
           <footer className="composer">
-            <div className="composer-toolbar mobile-only">
-              <span className="toolbar-icon">voice</span>
+            <div className="composer-mobile-row mobile-only">
+              <div className="composer-input-wrapper">
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder=""
+                  rows={1}
+                  className="composer-textarea-mobile"
+                />
+              </div>
+              <span className="toolbar-icon">☺</span>
+              {input.length > 0 ? (
+                <button type="button" className="btn-send-mobile" onClick={() => void sendMessage()}>发送</button>
+              ) : (
+                <span className="toolbar-icon">+</span>
+              )}
             </div>
-            <div className="composer-input-wrapper">
+            
+            <div className="composer-desktop-view desktop-only">
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder=""
                 rows={3}
-                className="composer-textarea"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
@@ -920,20 +934,11 @@ export default function App() {
                   }
                 }}
               />
-            </div>
-            <div className="composer-toolbar mobile-only">
-               <span className="toolbar-icon">☺</span>
-               {input.length > 0 ? (
-                 <button type="button" className="btn-send-mobile" onClick={() => void sendMessage()}>发送</button>
-               ) : (
-                 <span className="toolbar-icon">+</span>
-               )}
-            </div>
-            
-            <div className="composer-actions desktop-only">
-              <button type="button" className="btn-send" onClick={() => void sendMessage()} disabled={!input.trim() || !activeId}>
-                发送(S)
-              </button>
+              <div className="composer-actions">
+                <button type="button" className="btn-send" onClick={() => void sendMessage()} disabled={!input.trim() || !activeId}>
+                  发送(S)
+                </button>
+              </div>
             </div>
           </footer>
         </section>
