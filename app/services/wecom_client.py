@@ -23,9 +23,18 @@ class WeComClient:
         self._token = ""
         self._expires_at = 0.0
         self._base = "https://qyapi.weixin.qq.com"
+        self._opener = self._build_opener()
+
+    def _build_opener(self):
+        proxy = settings.wecom_proxy_url.strip()
+        if not proxy:
+            return urllib.request.build_opener()
+        handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        logger.info("wecom proxy enabled")
+        return urllib.request.build_opener(handler)
 
     def _get_json(self, url: str) -> dict[str, Any]:
-        with urllib.request.urlopen(url, timeout=8) as resp:  # nosec B310
+        with self._opener.open(url, timeout=8) as resp:  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
 
     def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -35,7 +44,7 @@ class WeComClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:  # nosec B310
+        with self._opener.open(req, timeout=8) as resp:  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
 
     def get_access_token(self, force_refresh: bool = False) -> str:

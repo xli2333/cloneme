@@ -33,6 +33,7 @@ class Settings:
     wecom_encoding_aes_key: str = field(
         default_factory=lambda: os.getenv("WECOM_ENCODING_AES_KEY", "").strip()
     )
+    wecom_proxy_url: str = field(default_factory=lambda: os.getenv("WECOM_PROXY_URL", "").strip())
     wecom_callback_path: str = field(
         default_factory=lambda: os.getenv("WECOM_CALLBACK_PATH", "/wecom/callback").strip()
     )
