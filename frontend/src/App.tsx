@@ -49,6 +49,7 @@ type PendingBatch = {
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || ''
+const VITE_PASSWORD = (import.meta.env.VITE_PASSWORD as string | undefined)?.trim() || ''
 const INPUT_IDLE_BASE_MS = 2800
 const INPUT_IDLE_MAX_MS = 3400
 const INPUT_BATCH_MAX_WAIT_MS = 7000
@@ -106,6 +107,12 @@ function formatClock(isoOrTs: string | number): string {
 }
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return sessionStorage.getItem('doppel_auth') === 'true'
+  })
+  const [passwordInput, setPasswordInput] = useState('')
+  const [passwordError, setPasswordError] = useState(false)
+
   const [conversations, setConversations] = useState<ConversationMeta[]>([])
   const [activeId, setActiveId] = useState<string>('')
   const [messages, setMessages] = useState<UiMessage[]>([])
@@ -210,6 +217,21 @@ export default function App() {
       }
     }
   }, [])
+
+  function handleLogin(e: React.FormEvent) {
+    e.preventDefault()
+    if (!VITE_PASSWORD) {
+      setPasswordError(true)
+      return
+    }
+    if (passwordInput === VITE_PASSWORD) {
+      setIsAuthenticated(true)
+      sessionStorage.setItem('doppel_auth', 'true')
+      setPasswordError(false)
+    } else {
+      setPasswordError(true)
+    }
+  }
 
   function touchConversation(conversationId: string, text: string, role: 'user' | 'assistant'): void {
     setConversations((prev) => {
@@ -562,7 +584,7 @@ export default function App() {
     const mergedText = batch.items.map((item) => item.text).join('\n')
 
     setSending(true)
-    setStatus('SENDING')
+    setStatus('对方正在输入中...')
 
     try {
       const res = await fetch(apiUrl('/api/chat'), {
@@ -645,6 +667,30 @@ export default function App() {
     const id = ctxMenu.messageId
     setCtxMenu((prev) => ({ ...prev, open: false }))
     await submitFeedback([id], '')
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="password-gate">
+        <form className="password-form" onSubmit={handleLogin}>
+          <div className="password-avatar">
+            <img src={dxaAvatar} alt="avatar" />
+          </div>
+          <div className="password-title">dxa</div>
+          <div className="password-input-group">
+            <input
+              type="password"
+              placeholder="请输入密码"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              autoFocus
+            />
+            {passwordError && <div className="password-error">密码错误，请重试</div>}
+          </div>
+          <button type="submit" className="btn-login">登录</button>
+        </form>
+      </div>
+    )
   }
 
   return (
