@@ -9,6 +9,7 @@ from .config import settings
 from .routers import chat as chat_router
 from .routers import feedback as feedback_router
 from .routers import system as system_router
+from .routers import wecom as wecom_router
 from .services.bootstrap import bootstrap_if_needed
 from .services.semantic_index import semantic_index_service
 
@@ -31,6 +32,7 @@ app.add_middleware(
 app.include_router(chat_router.router)
 app.include_router(feedback_router.router)
 app.include_router(system_router.router)
+app.include_router(wecom_router.router)
 
 
 @app.on_event("startup")

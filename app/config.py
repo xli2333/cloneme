@@ -26,6 +26,16 @@ class Settings:
         default_factory=lambda: os.getenv("LOG_RAW_MODEL_OUTPUT", "true").lower() == "true"
     )
     log_max_chars: int = field(default_factory=lambda: int(os.getenv("LOG_MAX_CHARS", "6000")))
+    wecom_corp_id: str = field(default_factory=lambda: os.getenv("WECOM_CORP_ID", "").strip())
+    wecom_agent_id: int = field(default_factory=lambda: int(os.getenv("WECOM_AGENT_ID", "0")))
+    wecom_secret: str = field(default_factory=lambda: os.getenv("WECOM_SECRET", "").strip())
+    wecom_token: str = field(default_factory=lambda: os.getenv("WECOM_TOKEN", "").strip())
+    wecom_encoding_aes_key: str = field(
+        default_factory=lambda: os.getenv("WECOM_ENCODING_AES_KEY", "").strip()
+    )
+    wecom_callback_path: str = field(
+        default_factory=lambda: os.getenv("WECOM_CALLBACK_PATH", "/wecom/callback").strip()
+    )
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip())
     gemini_pro_model: str = field(

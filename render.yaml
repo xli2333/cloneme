@@ -31,6 +31,16 @@
         value: https://.*\\.vercel\\.app
       - key: GEMINI_API_KEY
         sync: false
+      - key: WECOM_CORP_ID
+        sync: false
+      - key: WECOM_AGENT_ID
+        sync: false
+      - key: WECOM_SECRET
+        sync: false
+      - key: WECOM_TOKEN
+        sync: false
+      - key: WECOM_ENCODING_AES_KEY
+        sync: false
     disk:
       name: doppel-runtime
       mountPath: /opt/render/project/src/runtime
