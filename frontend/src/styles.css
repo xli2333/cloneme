@@ -18,6 +18,7 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -47,7 +48,7 @@ body {
   height: 100%;
 }
 
-/* Sidebar (New) */
+/* Sidebar (Desktop) */
 .nav-sidebar {
   width: 60px;
   background-color: var(--wechat-sidebar-bg);
@@ -511,7 +512,6 @@ body {
   cursor: not-allowed;
 }
 
-/* Rest of the styles... */
 .feedback-panel {
   padding: 8px 20px;
   background-color: #f7f7f7;
@@ -637,4 +637,269 @@ body {
   color: #fa5151;
   font-size: 14px;
   margin-top: 10px;
+}
+
+/* -----------------------------------------------------------
+   Mobile Responsive & Pixel Restoration
+----------------------------------------------------------- */
+
+/* Defaults (Desktop) */
+.mobile-only {
+  display: none !important;
+}
+
+.desktop-only {
+  display: inherit; /* or block/flex depending on context */
+}
+
+@media (max-width: 768px) {
+  /* Toggle Visibility */
+  .desktop-only {
+    display: none !important;
+  }
+  
+  .mobile-only {
+    display: flex !important;
+  }
+
+  /* Grid Layout Switch */
+  .grid-shell {
+    flex-direction: column;
+  }
+  
+  /* State: Listing */
+  .grid-shell.in-list .left-rail {
+    width: 100%;
+    display: flex;
+    flex: 1;
+    border-right: none;
+  }
+  
+  .grid-shell.in-list .chat-stage,
+  .grid-shell.in-list .nav-sidebar {
+    display: none;
+  }
+
+  /* State: Chatting */
+  .grid-shell.in-chat .chat-stage {
+    width: 100%;
+    display: flex;
+    flex: 1;
+  }
+  
+  .grid-shell.in-chat .left-rail,
+  .grid-shell.in-chat .nav-sidebar {
+    display: none;
+  }
+
+  /* Mobile Header (List View) */
+  .mobile-header {
+    height: 50px;
+    background-color: #ededed;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    border-bottom: 1px solid #dcdcdc;
+    flex-shrink: 0;
+  }
+
+  .mobile-header-title {
+    font-size: 17px;
+    font-weight: 500;
+    color: #000;
+  }
+
+  .mobile-header-actions {
+    position: absolute;
+    right: 15px;
+    display: flex;
+    gap: 15px;
+  }
+
+  .mobile-icon {
+    font-size: 20px;
+    color: #000;
+    cursor: pointer;
+  }
+
+  /* Mobile Rooms List */
+  .rooms-block {
+    background-color: #ededed;
+  }
+  
+  .room-item-wrapper {
+    background-color: #fff;
+  }
+  
+  .room-item {
+    height: 72px; /* Bigger touch target */
+    padding: 10px 16px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  
+  .room-item-avatar {
+    width: 48px;
+    height: 48px;
+    margin-right: 12px;
+  }
+
+  .room-name {
+    font-size: 16px;
+    color: #000;
+    font-weight: 400;
+  }
+  
+  .room-time {
+    color: #b2b2b2;
+    font-size: 12px;
+  }
+  
+  .room-preview {
+    color: #b2b2b2;
+    font-size: 14px;
+    margin-top: 4px;
+  }
+
+  /* Mobile Bottom Tab Bar */
+  .mobile-tab-bar {
+    height: 56px; /* Standard tab bar height */
+    background-color: #f7f7f7;
+    border-top: 1px solid #dcdcdc;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    padding-bottom: env(safe-area-inset-bottom);
+    flex-shrink: 0;
+  }
+
+  .tab-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #000;
+    opacity: 0.5;
+  }
+  
+  .tab-item.active {
+    opacity: 1;
+    color: #07c160;
+  }
+
+  .tab-icon {
+    font-size: 22px;
+    margin-bottom: 2px;
+  }
+
+  .tab-label {
+    font-size: 10px;
+  }
+
+  /* Mobile Chat Topbar */
+  .stage-topbar {
+    height: 50px;
+    background-color: #ededed;
+    padding: 0 12px;
+  }
+
+  .mobile-back-btn {
+    font-size: 24px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #000;
+    padding: 0 10px 0 0;
+  }
+
+  .mobile-more-btn {
+    font-size: 24px;
+    color: #000;
+    letter-spacing: -2px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+
+  /* Mobile Chat Pane */
+  .chat-pane {
+    background-color: #ededed;
+    padding: 15px;
+  }
+  
+  .msg-row {
+    margin-bottom: 20px;
+  }
+  
+  .avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 5px; /* Slightly squarer on mobile? */
+  }
+
+  .bubble {
+    font-size: 16px; /* Larger text for mobile */
+    padding: 10px 14px;
+    border-radius: 6px;
+    max-width: 80%;
+  }
+
+  /* Mobile Composer */
+  .composer {
+    background-color: #f7f7f7;
+    border-top: 1px solid #dcdcdc;
+    min-height: 56px;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .composer-toolbar.mobile-only {
+    height: 56px;
+    padding: 0 10px;
+    gap: 10px;
+    display: flex;
+    align-items: center;
+  }
+
+  .composer-input-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+  }
+
+  .composer-textarea {
+    width: 100%;
+    min-height: 36px;
+    height: 36px; /* Collapsed by default */
+    border-radius: 6px;
+    background-color: #fff;
+    padding: 8px 10px;
+    font-size: 16px;
+    line-height: 20px;
+    margin: 0;
+  }
+  
+  .composer-textarea:focus {
+    height: auto;
+    min-height: 36px;
+    max-height: 100px;
+  }
+  
+  .toolbar-icon {
+    font-size: 26px;
+    color: #181818;
+    width: 30px;
+    display: flex;
+    justify-content: center;
+  }
+
+  /* Mobile Send Button replacement for Plus icon */
+  .btn-send-mobile {
+    background-color: #07c160;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 14px;
+    font-weight: 500;
+  }
 }

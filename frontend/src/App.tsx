@@ -163,7 +163,12 @@ export default function App() {
     }
 
     const savedActive = localStorage.getItem(STORAGE_ACTIVE)
-    const resolvedActive = savedActive && list.some((c) => c.id === savedActive) ? savedActive : list[0].id
+    let resolvedActive = savedActive && list.some((c) => c.id === savedActive) ? savedActive : list[0].id
+
+    // Mobile: start in list view by default
+    if (window.innerWidth <= 768) {
+      resolvedActive = ''
+    }
 
     setConversations(list)
     setActiveId(resolvedActive)
@@ -475,7 +480,7 @@ export default function App() {
     }
 
     if (!sendingRef.current) {
-      setStatus('COLLECTING')
+      setStatus('发送中...')
     }
     schedulePendingFlush(text)
   }
@@ -533,7 +538,7 @@ export default function App() {
 
   function settleStatusAfterSend(): void {
     if (pendingBatchRef.current?.items.length) {
-      setStatus('COLLECTING')
+      setStatus('发送中...')
       const latest = pendingBatchRef.current.items[pendingBatchRef.current.items.length - 1]
       schedulePendingFlush(latest.text)
       return
@@ -695,8 +700,8 @@ export default function App() {
 
   return (
     <div className="page">
-      <div className="grid-shell">
-        <aside className="nav-sidebar">
+      <div className={`grid-shell ${activeId ? 'in-chat' : 'in-list'}`}>
+        <aside className="nav-sidebar desktop-only">
           <div className="nav-avatar">
             <img src={dxaAvatar} alt="me" />
           </div>
@@ -705,8 +710,17 @@ export default function App() {
         </aside>
 
         <aside className="left-rail">
+          {/* Mobile Header */}
+          <header className="mobile-header mobile-only">
+            <div className="mobile-header-title">微信</div>
+            <div className="mobile-header-actions">
+              <span className="mobile-icon" onClick={() => setIsSearching(!isSearching)}>🔍</span>
+              <span className="mobile-icon" onClick={createRoom}>+</span>
+            </div>
+          </header>
+
           <section className="rooms-block">
-            <div className="rooms-head">
+            <div className="rooms-head desktop-only">
               <div className="search-wrapper">
                 <input 
                   className="search-input"
@@ -795,12 +809,43 @@ export default function App() {
               )}
             </div>
           </section>
+
+          {/* Mobile Bottom Tab Bar */}
+          <footer className="mobile-tab-bar mobile-only">
+            <div className="tab-item active">
+              <div className="tab-icon">🗨️</div>
+              <div className="tab-label">微信</div>
+            </div>
+            <div className="tab-item">
+              <div className="tab-icon">👤</div>
+              <div className="tab-label">通讯录</div>
+            </div>
+            <div className="tab-item">
+              <div className="tab-icon">🧭</div>
+              <div className="tab-label">发现</div>
+            </div>
+            <div className="tab-item">
+              <div className="tab-icon">😎</div>
+              <div className="tab-label">我</div>
+            </div>
+          </footer>
         </aside>
 
         <section className="chat-stage">
           <header className="stage-topbar">
+            {/* Mobile Back Button */}
+            <button 
+              className="mobile-back-btn mobile-only"
+              onClick={() => setActiveId('')}
+            >
+              &lt;
+            </button>
+            
             <div className="topbar-room">{activeConv?.title || '微信'}</div>
-            <div className="topbar-status">
+            
+            <div className="mobile-more-btn mobile-only">···</div>
+
+            <div className="topbar-status desktop-only">
               {status === 'ONLINE' ? '' : status}
               {backendInfo?.status === 'ok' ? '' : ' [OFFLINE]'}
             </div>
@@ -858,19 +903,34 @@ export default function App() {
           </section>
 
           <footer className="composer">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder=""
-              rows={3}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void sendMessage()
-                }
-              }}
-            />
-            <div className="composer-actions">
+            <div className="composer-toolbar mobile-only">
+              <span className="toolbar-icon">voice</span>
+            </div>
+            <div className="composer-input-wrapper">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder=""
+                rows={3}
+                className="composer-textarea"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void sendMessage()
+                  }
+                }}
+              />
+            </div>
+            <div className="composer-toolbar mobile-only">
+               <span className="toolbar-icon">☺</span>
+               {input.length > 0 ? (
+                 <button type="button" className="btn-send-mobile" onClick={() => void sendMessage()}>发送</button>
+               ) : (
+                 <span className="toolbar-icon">+</span>
+               )}
+            </div>
+            
+            <div className="composer-actions desktop-only">
               <button type="button" className="btn-send" onClick={() => void sendMessage()} disabled={!input.trim() || !activeId}>
                 发送(S)
               </button>
