@@ -1,0 +1,37 @@
+﻿services:
+  - type: web
+    name: doppelganger-backend
+    env: python
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: INFO
+      - key: SEMANTIC_INDEX_AUTO_REFRESH
+        value: "true"
+      - key: SEMANTIC_REBUILD_ON_START
+        value: "false"
+      - key: GEMINI_PRO_MODEL
+        value: gemini-3-pro-preview
+      - key: GEMINI_FLASH_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-3-pro-preview,gemini-3-flash-preview
+      - key: CORS_ALLOW_ORIGINS
+        value: https://your-frontend-domain.vercel.app
+      - key: CORS_ALLOW_ORIGIN_REGEX
+        value: https://.*\\.vercel\\.app
+      - key: GEMINI_API_KEY
+        sync: false
+    disk:
+      name: doppel-runtime
+      mountPath: /opt/render/project/src/runtime
+      sizeGB: 30

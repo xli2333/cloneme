@@ -1,0 +1,60 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doppelganger 聊天</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="conv-sidebar">
+        <div class="conv-head">
+          <div class="conv-title">会话窗口</div>
+          <button id="newConvBtn" class="ghost-btn" type="button">新建</button>
+        </div>
+        <div id="convList" class="conv-list"></div>
+      </aside>
+
+      <section class="wechat-shell">
+        <header class="topbar">
+          <div class="avatar">D</div>
+          <div class="meta">
+            <div id="activeConvTitle" class="name">Doppelganger</div>
+            <div id="statusText" class="status">在线</div>
+          </div>
+        </header>
+
+        <section id="chatPane" class="chat-pane"></section>
+
+        <section id="feedbackBar" class="feedback-bar hidden">
+          <div id="selectedCount">已选中 0 条</div>
+          <input id="feedbackComment" type="text" placeholder="可选：这段哪里好" maxlength="120" />
+          <button id="clearSelectedBtn" class="ghost-btn" type="button">清空</button>
+          <button id="submitFeedbackBtn" class="primary-btn" type="button">这段不错</button>
+        </section>
+
+        <footer class="composer">
+          <textarea id="messageInput" rows="1" placeholder="输入消息..." maxlength="1200"></textarea>
+          <button id="sendBtn" class="send-btn" type="button">发送</button>
+        </footer>
+      </section>
+    </main>
+
+    <template id="msgTpl">
+      <div class="msg-row">
+        <div class="bubble-wrap">
+          <div class="bubble"></div>
+        </div>
+      </div>
+    </template>
+
+    <div id="ctxMenu" class="ctx-menu hidden">
+      <button id="ctxPickBtn" type="button"></button>
+      <button id="ctxMarkSelectedBtn" type="button">对已多选标记不错</button>
+      <button id="ctxLikeBtn" type="button">仅标记这条不错</button>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
