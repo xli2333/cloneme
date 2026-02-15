@@ -923,7 +923,7 @@ class GenerationService:
         candidate_count = int(_clamp(candidate_count, 8, 20))
 
         generator_result = client.generate(
-            primary_model=settings.gemini_flash_model,
+            primary_model=settings.gemini_pro_model,
             prompt=self._generation_prompt(user_message, plan, context, candidate_count),
             temperature=0.72,
             max_output_tokens=2800,

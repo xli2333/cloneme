@@ -32,7 +32,7 @@ class Settings:
         default_factory=lambda: os.getenv("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
     )
     gemini_flash_model: str = field(
-        default_factory=lambda: os.getenv("GEMINI_FLASH_MODEL", "gemini-3-flash-preview")
+        default_factory=lambda: os.getenv("GEMINI_FLASH_MODEL", "gemini-3-pro-preview")
     )
     gemini_embedding_model: str = field(
         default_factory=lambda: os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
@@ -47,7 +47,7 @@ class Settings:
         default_factory=lambda: _split_csv(
             os.getenv(
                 "GEMINI_FALLBACK_MODELS",
-                "gemini-3-pro-preview,gemini-3-flash-preview",
+                "gemini-3-pro-preview",
             )
         )
     )

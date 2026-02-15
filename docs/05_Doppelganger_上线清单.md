@@ -4,7 +4,7 @@
 
 - `GEMINI_API_KEY` 已配置
 - `GEMINI_PRO_MODEL=gemini-3-pro-preview`
-- `GEMINI_FLASH_MODEL=gemini-3-flash-preview`
+- `GEMINI_FLASH_MODEL=gemini-3-pro-preview`
 - `GEMINI_EMBEDDING_MODEL=gemini-embedding-001`
 - `GEMINI_EMBEDDING_DIM=3072`
 - `CORS_ALLOW_ORIGINS` 包含前端域名

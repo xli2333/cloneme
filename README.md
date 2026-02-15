@@ -15,7 +15,7 @@
 - 检索返回整段历史原文（不是碎句）
 - 生成双模型链路：
   - `GEMINI_PRO_MODEL`：规划 / 复核
-  - `GEMINI_FLASH_MODEL`：多候选生成
+  - `GEMINI_FLASH_MODEL`：默认与 `GEMINI_PRO_MODEL` 相同（pro-only）
 - 启动时自动探测可用模型，主模型不可用时自动切换到 fallback（避免每轮 404）
 - 在线记忆：用户和虚拟人的新对话会持续写入并参与后续检索
 - 进化机制：前端可右键多选消息并提交“不错”反馈，后端总结后更新偏好画像
@@ -36,7 +36,7 @@ Copy-Item .env.example .env
 
 3. 填写 `.env` 中的 `GEMINI_API_KEY`，确认模型名：
 - `GEMINI_PRO_MODEL=gemini-3-pro-preview`
-- `GEMINI_FLASH_MODEL=gemini-3-flash-preview`
+- `GEMINI_FLASH_MODEL=gemini-3-pro-preview`
 
 4. 启动后端
 ```bash

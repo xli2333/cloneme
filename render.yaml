@@ -22,9 +22,9 @@
       - key: GEMINI_PRO_MODEL
         value: gemini-3-pro-preview
       - key: GEMINI_FLASH_MODEL
-        value: gemini-3-flash-preview
+        value: gemini-3-pro-preview
       - key: GEMINI_FALLBACK_MODELS
-        value: gemini-3-pro-preview,gemini-3-flash-preview
+        value: gemini-3-pro-preview
       - key: CORS_ALLOW_ORIGINS
         value: https://your-frontend-domain.vercel.app
       - key: CORS_ALLOW_ORIGIN_REGEX
