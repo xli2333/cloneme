@@ -34,7 +34,11 @@ def chat(req: ChatRequest) -> ChatResponse:
     )
 
     try:
-        result = generation_service.generate(req.conversation_id, text)
+        result = generation_service.generate(
+            req.conversation_id,
+            text,
+            persona_key=settings.dxa_persona_key,
+        )
     except Exception as exc:
         logger.exception("generation_error conversation=%s error=%s", req.conversation_id, exc)
         snippet = text[:36].strip()

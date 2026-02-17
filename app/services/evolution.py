@@ -9,6 +9,7 @@ from ..config import settings
 from ..db import db
 from .gemini_client import get_gemini_client
 from .persona import flatten_persona, merge_phrase_scores, normalize_persona_payload
+from .persona_routing import resolve_persona_key_from_conversation_id
 
 logger = logging.getLogger("doppelganger.evolution")
 JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
@@ -32,10 +33,13 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 class EvolutionService:
-    def _update_persona_from_samples(self, sample_texts: list[str]) -> int:
+    def _update_persona_from_samples(self, sample_texts: list[str], *, persona_key: str | None = None) -> int:
         if not sample_texts:
             return 0
-        persona_row = db.get_persona_profile()
+        key = (persona_key or settings.dxa_persona_key).strip() or settings.dxa_persona_key
+        persona_row = db.get_persona_profile(key)
+        if not persona_row and key == settings.dxa_persona_key:
+            persona_row = db.get_persona_profile("default")
         if not persona_row:
             return 0
 
@@ -45,7 +49,8 @@ class EvolutionService:
         speech_traits = adaptive.setdefault("speech_traits", {})
         existing = [str(x) for x in speech_traits.get("top_phrases", []) if str(x).strip()]
 
-        candidate_row = db.get_profile("persona_candidate")
+        candidate_type = f"persona_candidate:{key}"
+        candidate_row = db.get_profile(candidate_type)
         candidate_payload = candidate_row["payload"] if candidate_row else {"sample_count": 0, "phrase_scores": {}}
         phrase_scores: dict[str, int] = {
             str(k): int(v) for k, v in (candidate_payload.get("phrase_scores", {}) or {}).items()
@@ -60,7 +65,7 @@ class EvolutionService:
 
         sample_count = int(candidate_payload.get("sample_count", 0)) + len(sample_texts)
         db.upsert_profile(
-            "persona_candidate",
+            candidate_type,
             {
                 "sample_count": sample_count,
                 "phrase_scores": phrase_scores,
@@ -80,12 +85,22 @@ class EvolutionService:
         )
         speech_traits["top_phrases"] = merged
         adaptive["updated_from_feedback"] = True
-        db.upsert_persona_profile(persona_payload, bump_version=True)
-        db.upsert_profile("persona_candidate", {"sample_count": 0, "phrase_scores": {}}, bump_version=True)
-        latest = db.get_persona_profile()
+        db.upsert_persona_profile(persona_payload, profile_key=key, bump_version=True)
+        if key == settings.dxa_persona_key:
+            db.upsert_persona_profile(persona_payload, profile_key="default")
+        db.upsert_profile(candidate_type, {"sample_count": 0, "phrase_scores": {}}, bump_version=True)
+        latest = db.get_persona_profile(key)
         return int(latest["version"]) if latest else int(persona_row["version"])
 
-    def summarize_and_update(self, conversation_id: str, message_ids: list[int], comment: str) -> dict[str, Any]:
+    def summarize_and_update(
+        self,
+        conversation_id: str,
+        message_ids: list[int],
+        comment: str,
+        *,
+        persona_key: str | None = None,
+    ) -> dict[str, Any]:
+        key = (persona_key or resolve_persona_key_from_conversation_id(conversation_id)).strip() or settings.dxa_persona_key
         with db.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -98,9 +113,11 @@ class EvolutionService:
                 [conversation_id, *message_ids],
             ).fetchall()
 
-        pref_row = db.get_profile("preference")
+        pref_row = db.get_profile(f"preference:{key}")
+        if not pref_row and key == settings.dxa_persona_key:
+            pref_row = db.get_profile("preference")
         if not pref_row:
-            raise RuntimeError("preference profile missing")
+            raise RuntimeError(f"preference profile missing for persona={key}")
 
         if not rows:
             return {
@@ -118,12 +135,15 @@ class EvolutionService:
             }
 
         preference = pref_row["payload"]
+        strict_only = str((preference.get("nickname", {}) or {}).get("strict_only", "")).strip()
+        if not strict_only and key == settings.dxa_persona_key:
+            strict_only = settings.strict_nickname
 
         prompt = f"""
 你是“回复偏好总结器”。请基于用户标注“不错”的回复样本，提炼微调参数。
 
 要求：
-1. 不能改变主人格，不允许突破称呼约束（仅 {settings.strict_nickname}）。
+1. 不能改变主人格，不允许突破称呼约束（仅 {strict_only if strict_only else '不使用固定昵称'}）。
 2. 只能做小幅度参数微调。
 3. 输出 JSON，不要输出解释。
 
@@ -229,20 +249,28 @@ class EvolutionService:
             for key in rest_keys:
                 weights[key] = round(float(weights[key]) * scale, 4)
 
+        forbidden = (
+            list(settings.forbidden_nicknames)
+            if key == settings.dxa_persona_key
+            else list(settings.friends_forbidden_nicknames)
+        )
         preference["nickname"] = {
-            "strict_only": settings.strict_nickname,
-            "forbidden": settings.forbidden_nicknames,
+            "strict_only": strict_only,
+            "forbidden": forbidden,
         }
         preference.setdefault("master_persona", {})
         preference["master_persona"]["locked"] = True
 
-        db.upsert_profile("preference", preference, bump_version=True)
-        persona_version = self._update_persona_from_samples(sample_texts)
-        latest = db.get_profile("preference")
+        db.upsert_profile(f"preference:{key}", preference, bump_version=True)
+        if key == settings.dxa_persona_key:
+            db.upsert_profile("preference", preference)
+        persona_version = self._update_persona_from_samples(sample_texts, persona_key=key)
+        latest = db.get_profile(f"preference:{key}") or pref_row
         return {
             "accepted_count": len(sample_texts),
             "preference_version": latest["version"] if latest else pref_row["version"],
             "persona_version": int(persona_version),
+            "persona_key": key,
             "summary": str(payload.get("summary") or "已根据反馈微调偏好参数"),
         }
 

@@ -47,6 +47,7 @@ class Database:
                     msg_type TEXT,
                     timestamp_raw TEXT,
                     timestamp_unix INTEGER,
+                    persona_key TEXT NOT NULL DEFAULT 'dxa',
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     is_garbled INTEGER NOT NULL DEFAULT 0,
@@ -60,6 +61,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS baseline_segments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     anchor_user_id INTEGER NOT NULL UNIQUE,
+                    persona_key TEXT NOT NULL DEFAULT 'dxa',
                     anchor_text TEXT NOT NULL,
                     segment_text TEXT NOT NULL,
                     start_msg_id INTEGER NOT NULL,
@@ -75,6 +77,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS segment_embeddings (
                     segment_id INTEGER PRIMARY KEY,
+                    persona_key TEXT NOT NULL DEFAULT 'dxa',
                     model TEXT NOT NULL,
                     dim INTEGER NOT NULL,
                     text_source TEXT NOT NULL DEFAULT 'anchor_text',
@@ -138,11 +141,35 @@ class Database:
             )
 
             # Schema migration for older DBs.
+            base_cols = {r["name"] for r in conn.execute("PRAGMA table_info(baseline_messages)").fetchall()}
+            if "persona_key" not in base_cols:
+                conn.execute(
+                    "ALTER TABLE baseline_messages ADD COLUMN persona_key TEXT NOT NULL DEFAULT 'dxa'"
+                )
+
+            seg_cols = {r["name"] for r in conn.execute("PRAGMA table_info(baseline_segments)").fetchall()}
+            if "persona_key" not in seg_cols:
+                conn.execute(
+                    "ALTER TABLE baseline_segments ADD COLUMN persona_key TEXT NOT NULL DEFAULT 'dxa'"
+                )
+
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(segment_embeddings)").fetchall()}
             if "text_source" not in cols:
                 conn.execute(
                     "ALTER TABLE segment_embeddings ADD COLUMN text_source TEXT NOT NULL DEFAULT 'anchor_text'"
                 )
+            if "persona_key" not in cols:
+                conn.execute(
+                    "ALTER TABLE segment_embeddings ADD COLUMN persona_key TEXT NOT NULL DEFAULT 'dxa'"
+                )
+
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_baseline_persona ON baseline_messages(persona_key);
+                CREATE INDEX IF NOT EXISTS idx_segments_persona ON baseline_segments(persona_key);
+                CREATE INDEX IF NOT EXISTS idx_segment_embeddings_persona ON segment_embeddings(persona_key);
+                """
+            )
 
             conn.executescript(
                 """

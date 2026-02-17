@@ -59,7 +59,13 @@ def _dynamic_window(query_text: str, before: int, after: int) -> tuple[int, int]
 
 
 class RetrievalService:
-    def _query_segment_hits_lexical(self, conn, query_text: str, limit: int) -> list[dict[str, Any]]:
+    def _query_segment_hits_lexical(
+        self,
+        conn,
+        query_text: str,
+        limit: int,
+        persona_key: str,
+    ) -> list[dict[str, Any]]:
         hits: list[dict[str, Any]] = []
         fts = _to_fts_query(query_text)
         if fts:
@@ -69,10 +75,11 @@ class RetrievalService:
                 FROM baseline_segments_fts
                 JOIN baseline_segments s ON s.id = baseline_segments_fts.rowid
                 WHERE baseline_segments_fts MATCH ?
+                  AND s.persona_key = ?
                 ORDER BY rank ASC, s.id DESC
                 LIMIT ?
                 """,
-                (fts, limit),
+                (fts, persona_key, limit),
             ).fetchall()
             hits.extend(rows)
 
@@ -84,10 +91,11 @@ class RetrievalService:
                 SELECT id, anchor_text, anchor_timestamp_unix, 10000.0 AS rank
                 FROM baseline_segments
                 WHERE {where}
+                  AND persona_key = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                [*([f"%{g}%" for g in grams]), limit],
+                [*([f"%{g}%" for g in grams]), persona_key, limit],
             ).fetchall()
             hits.extend(rows2)
 
@@ -96,10 +104,11 @@ class RetrievalService:
                 """
                 SELECT id, anchor_text, anchor_timestamp_unix, 20000.0 AS rank
                 FROM baseline_segments
+                WHERE persona_key = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (persona_key, limit),
             ).fetchall()
             hits.extend(rows3)
 
@@ -155,9 +164,20 @@ class RetrievalService:
 
         return self.get_recent_messages(conversation_id, limit=min(k, 12))
 
-    def retrieve_baseline_style(self, query_text: str, k: int = 24) -> list[dict[str, Any]]:
+    def retrieve_baseline_style(
+        self,
+        query_text: str,
+        k: int = 24,
+        *,
+        persona_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        persona_key = (persona_key or settings.dxa_persona_key).strip() or settings.dxa_persona_key
         # Style references are sampled from top semantic segments' assistant lines.
-        segments = self.retrieve_similar_segments(query_text, top_k_hits=max(2, k // 6))
+        segments = self.retrieve_similar_segments(
+            query_text,
+            top_k_hits=max(2, k // 6),
+            persona_key=persona_key,
+        )
         lines: list[dict[str, Any]] = []
         for seg in segments:
             for ln in seg.get("lines", []):
@@ -182,17 +202,24 @@ class RetrievalService:
         top_k_hits: int = 6,
         window_before: int | None = None,
         window_after: int | None = None,
+        persona_key: str | None = None,
     ) -> list[dict[str, Any]]:
         query_text = query_text.strip()
         if not query_text:
             return []
+        persona_key = (persona_key or settings.dxa_persona_key).strip() or settings.dxa_persona_key
 
         window_before = settings.segment_window_before if window_before is None else window_before
         window_after = settings.segment_window_after if window_after is None else window_after
         window_before, window_after = _dynamic_window(query_text, int(window_before), int(window_after))
 
         with db.connect() as conn:
-            lexical_hits = self._query_segment_hits_lexical(conn, query_text, settings.semantic_lexical_pool)
+            lexical_hits = self._query_segment_hits_lexical(
+                conn,
+                query_text,
+                settings.semantic_lexical_pool,
+                persona_key,
+            )
 
             semantic_hits = []
             if settings.semantic_enabled:
@@ -200,6 +227,7 @@ class RetrievalService:
                     semantic_hits = semantic_index_service.search(
                         query_text,
                         top_k=max(top_k_hits, settings.semantic_recall_k),
+                        persona_key=persona_key,
                     )
                 except Exception as exc:
                     logger.warning("semantic_search_failed error=%s", exc)
@@ -220,8 +248,12 @@ class RetrievalService:
                 sid = int(hit["segment_id"])
                 if sid not in merged:
                     row = conn.execute(
-                        "SELECT anchor_text, anchor_timestamp_unix FROM baseline_segments WHERE id = ?",
-                        (sid,),
+                        """
+                        SELECT anchor_text, anchor_timestamp_unix
+                        FROM baseline_segments
+                        WHERE id = ? AND persona_key = ?
+                        """,
+                        (sid, persona_key),
                     ).fetchone()
                     if not row:
                         continue
@@ -296,9 +328,9 @@ class RetrievalService:
                     """
                     SELECT id, anchor_user_id, anchor_text, start_msg_id, end_msg_id, line_count
                     FROM baseline_segments
-                    WHERE id = ?
+                    WHERE id = ? AND persona_key = ?
                     """,
-                    (sid,),
+                    (sid, persona_key),
                 ).fetchone()
                 if not seg_row:
                     continue
@@ -316,11 +348,12 @@ class RetrievalService:
                     SELECT id, role, sender, content, msg_type, timestamp_raw
                     FROM baseline_messages
                     WHERE id BETWEEN ? AND ?
+                      AND persona_key = ?
                       AND msg_type = '1'
                       AND is_garbled = 0
                     ORDER BY id ASC
                     """,
-                    (start_id, end_id),
+                    (start_id, end_id, persona_key),
                 ).fetchall()
 
                 lines = [
@@ -367,7 +400,8 @@ class RetrievalService:
         if segments:
             top = segments[0]
             logger.info(
-                "rag_segment_top seg_id=%s score=%.4f semantic=%.4f lexical=%.4f window=%d/%d anchor=%s",
+                "rag_segment_top persona=%s seg_id=%s score=%.4f semantic=%.4f lexical=%.4f window=%d/%d anchor=%s",
+                persona_key,
                 top.get("segment_id"),
                 float(top.get("retrieval_score", 0.0)),
                 float(top.get("semantic_score", 0.0)),
@@ -391,8 +425,12 @@ class RetrievalService:
             )
         return segments
 
-    def fetch_fact_cards(self, query_text: str, k: int = 10) -> list[str]:
-        segments = self.retrieve_similar_segments(query_text, top_k_hits=max(1, k // 2))
+    def fetch_fact_cards(self, query_text: str, k: int = 10, *, persona_key: str | None = None) -> list[str]:
+        segments = self.retrieve_similar_segments(
+            query_text,
+            top_k_hits=max(1, k // 2),
+            persona_key=persona_key,
+        )
         facts: list[str] = []
         for seg in segments:
             for line in seg.get("lines", []):

@@ -37,6 +37,8 @@ class SemanticIndexService:
         self._ids: np.ndarray | None = None
         self._vectors: np.ndarray | None = None
         self._id_to_pos: dict[int, int] = {}
+        self._segment_persona_map: dict[int, str] = {}
+        self._persona_to_positions: dict[str, np.ndarray] = {}
         self._loaded_signature: tuple[float, float] | None = None
         self._query_cache: dict[str, np.ndarray] = {}
 
@@ -78,6 +80,26 @@ class SemanticIndexService:
                 segment_ids,
             ).fetchall()
         return {int(r["id"]): str(r["text"] or "") for r in rows}
+
+    def _fetch_segment_persona_keys(self, segment_ids: list[int]) -> dict[int, str]:
+        if not segment_ids:
+            return {}
+        out: dict[int, str] = {}
+        chunk = 800
+        with db.connect() as conn:
+            for i in range(0, len(segment_ids), chunk):
+                part = segment_ids[i : i + chunk]
+                rows = conn.execute(
+                    f"""
+                    SELECT id, persona_key
+                    FROM baseline_segments
+                    WHERE id IN ({','.join('?' for _ in part)})
+                    """,
+                    part,
+                ).fetchall()
+                for row in rows:
+                    out[int(row["id"])] = str(row.get("persona_key") or settings.dxa_persona_key)
+        return out
 
     def get_status(self) -> dict[str, Any]:
         with db.connect() as conn:
@@ -156,6 +178,7 @@ class SemanticIndexService:
         missing = [sid for sid in missing if sid in text_map and text_map[sid].strip()]
         if not missing:
             return {"written": 0, "checked": len(segment_ids)}
+        persona_map = self._fetch_segment_persona_keys(missing)
 
         bs = max(1, int(batch_size or settings.embedding_batch_size))
         client = get_gemini_client()
@@ -178,6 +201,7 @@ class SemanticIndexService:
                 payloads.append(
                     {
                         "segment_id": sid,
+                        "persona_key": persona_map.get(sid, settings.dxa_persona_key),
                         "model": settings.gemini_embedding_model,
                         "dim": settings.gemini_embedding_dim,
                         "text_source": self._source,
@@ -191,9 +215,10 @@ class SemanticIndexService:
             with db.connect() as conn:
                 conn.executemany(
                     """
-                    INSERT INTO segment_embeddings(segment_id, model, dim, text_source, vector_blob, norm, created_at, updated_at)
-                    VALUES(:segment_id, :model, :dim, :text_source, :vector_blob, :norm, :created_at, :updated_at)
+                    INSERT INTO segment_embeddings(segment_id, persona_key, model, dim, text_source, vector_blob, norm, created_at, updated_at)
+                    VALUES(:segment_id, :persona_key, :model, :dim, :text_source, :vector_blob, :norm, :created_at, :updated_at)
                     ON CONFLICT(segment_id) DO UPDATE SET
+                      persona_key = excluded.persona_key,
                       model = excluded.model,
                       dim = excluded.dim,
                       text_source = excluded.text_source,
@@ -239,6 +264,7 @@ class SemanticIndexService:
                        OR e.model != ?
                        OR e.dim != ?
                        OR e.text_source != ?
+                       OR e.persona_key != s.persona_key
                     ORDER BY s.id ASC
                     LIMIT ?
                     """
@@ -349,6 +375,8 @@ class SemanticIndexService:
         self._ids = None
         self._vectors = None
         self._id_to_pos.clear()
+        self._segment_persona_map.clear()
+        self._persona_to_positions.clear()
 
         logger.info("semantic_dense_export_done count=%d dim=%d source=%s", count, settings.gemini_embedding_dim, self._source)
         return {"rows": count, "meta": meta}
@@ -386,22 +414,35 @@ class SemanticIndexService:
                     self._ids = None
                     self._vectors = None
                     self._id_to_pos = {}
+                    self._segment_persona_map = {}
+                    self._persona_to_positions = {}
                     self._loaded_signature = None
                     return False
             except Exception:
                 pass
 
         self._id_to_pos = {int(seg_id): idx for idx, seg_id in enumerate(self._ids.tolist())}
+        seg_ids = [int(x) for x in self._ids.tolist()]
+        self._segment_persona_map = self._fetch_segment_persona_keys(seg_ids)
+        persona_pos: dict[str, list[int]] = {}
+        for sid, pos in self._id_to_pos.items():
+            key = self._segment_persona_map.get(sid, settings.dxa_persona_key)
+            persona_pos.setdefault(key, []).append(pos)
+        self._persona_to_positions = {
+            key: np.asarray(sorted(positions), dtype=np.int64)
+            for key, positions in persona_pos.items()
+        }
         self._loaded_signature = sig
         logger.info(
-            "semantic_dense_loaded rows=%d dim=%d source=%s",
+            "semantic_dense_loaded rows=%d dim=%d source=%s personas=%s",
             int(self._vectors.shape[0]),
             int(self._vectors.shape[1]),
             self._source,
+            sorted(list(self._persona_to_positions.keys())),
         )
         return True
 
-    def search(self, query: str, *, top_k: int) -> list[dict[str, Any]]:
+    def search(self, query: str, *, top_k: int, persona_key: str | None = None) -> list[dict[str, Any]]:
         if not query.strip() or top_k <= 0:
             return []
         if not self.ensure_dense_loaded():
@@ -411,6 +452,26 @@ class SemanticIndexService:
 
         qvec = self._embed_query(query)
         scores = self._vectors @ qvec
+
+        if persona_key:
+            key = persona_key.strip() or settings.dxa_persona_key
+            positions = self._persona_to_positions.get(key)
+            if positions is None or positions.size == 0:
+                return []
+            scoped_scores = scores[positions]
+            k = min(int(top_k), int(scoped_scores.shape[0]))
+            if k <= 0:
+                return []
+            idx = np.argpartition(scoped_scores, -k)[-k:]
+            idx = idx[np.argsort(scoped_scores[idx])[::-1]]
+            chosen_pos = positions[idx]
+            return [
+                {
+                    "segment_id": int(self._ids[pos]),
+                    "semantic_score": float(scores[pos]),
+                }
+                for pos in chosen_pos.tolist()
+            ]
 
         k = min(int(top_k), int(scores.shape[0]))
         if k <= 0:

@@ -11,6 +11,7 @@ from fastapi.responses import PlainTextResponse
 from ..config import settings
 from ..services.generation import generation_service
 from ..services.memory import memory_service
+from ..services.persona_routing import resolve_persona_key_from_user_id
 from ..services.wecom_client import WeComApiError, wecom_client
 from ..services.wecom_crypto import WeComCrypto, WeComCryptoError
 
@@ -77,6 +78,15 @@ def _seen_before(key: str, ttl_seconds: int = 600) -> bool:
     return False
 
 
+def _fallback_text(content: str, persona_key: str) -> str:
+    snippet = content.strip().replace("\n", " ")
+    if len(snippet) > 24:
+        snippet = snippet[:24] + "…"
+    if persona_key == settings.dxa_persona_key:
+        return f"{settings.strict_nickname}，我在，先按你这句「{snippet}」接着聊。"
+    return f"我在，先按你这句「{snippet}」接着聊。"
+
+
 def _handle_text_message(msg: dict[str, str]) -> None:
     from_user = msg.get("FromUserName", "").strip()
     content = msg.get("Content", "").strip()
@@ -84,33 +94,37 @@ def _handle_text_message(msg: dict[str, str]) -> None:
     if not from_user or not content:
         return
 
+    persona_key = resolve_persona_key_from_user_id(from_user)
     conversation_id = f"wecom:{agent_id}:{from_user.lower()}"
     user_message_id = memory_service.add_message(
         conversation_id=conversation_id,
         role="user",
         content=content,
         message_type="text",
-        metadata={"source": "wecom"},
+        metadata={"source": "wecom", "persona_key": persona_key},
     )
 
     reply_text = ""
     try:
-        result = generation_service.generate(conversation_id, content)
+        result = generation_service.generate(
+            conversation_id,
+            content,
+            persona_key=persona_key,
+        )
         delays = result.debug.get("delays", [])
-        assistant_ids: list[int] = []
         for idx, bubble in enumerate(result.bubbles):
-            aid = memory_service.add_message(
+            memory_service.add_message(
                 conversation_id=conversation_id,
                 role="assistant",
                 content=bubble,
                 message_type="text",
                 metadata={
                     "source": "wecom",
+                    "persona_key": persona_key,
                     "bubble_index": idx,
                     "delay_ms": int(delays[idx] if idx < len(delays) else 0),
                 },
             )
-            assistant_ids.append(aid)
         memory_service.save_candidates(
             conversation_id=conversation_id,
             user_message_id=user_message_id,
@@ -119,23 +133,22 @@ def _handle_text_message(msg: dict[str, str]) -> None:
         )
         reply_text = "\n".join([x.strip() for x in result.bubbles if x.strip()]).strip()
     except Exception as exc:
-        logger.exception("wecom generation failed: %s", exc)
-        fallback = "我收到了，稍等我再发你。"
-        reply_text = fallback
+        logger.exception("wecom generation failed persona=%s error=%s", persona_key, exc)
+        reply_text = _fallback_text(content, persona_key)
         memory_service.add_message(
             conversation_id=conversation_id,
             role="assistant",
-            content=fallback,
+            content=reply_text,
             message_type="text",
-            metadata={"source": "wecom", "fallback": True},
+            metadata={"source": "wecom", "persona_key": persona_key, "fallback": True},
         )
 
     if not reply_text:
-        reply_text = "我在。"
+        reply_text = _fallback_text(content, persona_key)
     try:
         wecom_client.send_text_message(from_user, reply_text)
     except WeComApiError as exc:
-        logger.error("wecom send failed: user=%s error=%s", from_user, exc)
+        logger.error("wecom send failed: user=%s persona=%s error=%s", from_user, persona_key, exc)
 
 
 @router.get(CALLBACK_PATH)
@@ -185,3 +198,4 @@ async def receive_callback(
         logger.info("wecom skip msg_type=%s", msg_type or "unknown")
 
     return PlainTextResponse("", status_code=200)
+

@@ -162,30 +162,73 @@ class GenerationResult:
 class GenerationService:
     def __init__(self) -> None:
         self.rng = random.Random()
-        self._persona_cache_payload: dict[str, Any] | None = None
-        self._persona_cache_at: float = 0.0
-        self._persona_cache_version: int = 0
+        self._persona_cache_payload: dict[str, dict[str, Any]] = {}
+        self._persona_cache_at: dict[str, float] = {}
+        self._persona_cache_version: dict[str, int] = {}
 
-    def _get_persona_cached(self) -> dict[str, Any]:
+    def _normalize_persona_key(self, persona_key: str | None) -> str:
+        key = (persona_key or settings.dxa_persona_key).strip()
+        return key or settings.dxa_persona_key
+
+    def _get_persona_cached(self, persona_key: str | None = None) -> dict[str, Any]:
+        key = self._normalize_persona_key(persona_key)
         ttl = max(5, int(settings.persona_cache_ttl_sec))
         now = time.monotonic()
-        if self._persona_cache_payload is not None and (now - self._persona_cache_at) < ttl:
-            return self._persona_cache_payload
+        cached = self._persona_cache_payload.get(key)
+        cached_at = float(self._persona_cache_at.get(key, 0.0))
+        if cached is not None and (now - cached_at) < ttl:
+            return cached
 
-        row = db.get_persona_profile()
+        row = db.get_persona_profile(key)
+        if not row and key == settings.dxa_persona_key:
+            row = db.get_persona_profile("default")
         payload = normalize_persona_payload(row["payload"] if row else {})
-        self._persona_cache_payload = payload
-        self._persona_cache_at = now
-        self._persona_cache_version = int(row["version"]) if row else 0
+        self._persona_cache_payload[key] = payload
+        self._persona_cache_at[key] = now
+        self._persona_cache_version[key] = int(row["version"]) if row else 0
         return payload
 
-    def _load_profiles(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        style_row = db.get_profile("style")
-        pref_row = db.get_profile("preference")
+    def _load_profiles(self, persona_key: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        key = self._normalize_persona_key(persona_key)
+        style_row = db.get_profile(f"style:{key}")
+        pref_row = db.get_profile(f"preference:{key}")
+        if key == settings.dxa_persona_key:
+            style_row = style_row or db.get_profile("style")
+            pref_row = pref_row or db.get_profile("preference")
         if not style_row or not pref_row:
-            raise RuntimeError("style/preference profiles not found. bootstrap required.")
-        persona_payload = self._get_persona_cached()
+            raise RuntimeError(f"style/preference profiles not found for persona={key}. bootstrap required.")
+        persona_payload = self._get_persona_cached(key)
         return style_row["payload"], pref_row["payload"], persona_payload
+
+    def _nickname_policy(
+        self,
+        persona: dict[str, Any],
+        *,
+        persona_key: str | None = None,
+    ) -> tuple[str, list[str]]:
+        key = self._normalize_persona_key(persona_key)
+        flat = flatten_persona(persona)
+        relation = dict(flat.get("relationship", {}))
+        strict = str(relation.get("strict_nickname") or "").strip()
+        forbidden = [str(x).strip() for x in relation.get("forbidden_nicknames", []) if str(x).strip()]
+        if not forbidden:
+            forbidden = (
+                list(settings.forbidden_nicknames)
+                if key == settings.dxa_persona_key
+                else list(settings.friends_forbidden_nicknames)
+            )
+        if key == settings.dxa_persona_key and not strict:
+            strict = settings.strict_nickname
+        return strict, forbidden
+
+    def _nickname_rule_text(self, persona: dict[str, Any], *, persona_key: str | None = None) -> str:
+        strict, forbidden = self._nickname_policy(persona, persona_key=persona_key)
+        if strict:
+            return f"亲昵称呼只能使用“{strict}”，禁止其他称呼。"
+        sample = "、".join(forbidden[:6])
+        if sample:
+            return f"不要使用固定亲密昵称（如：{sample}）。"
+        return "不要使用固定亲昵称呼。"
 
     def _build_context_frame(
         self,
@@ -254,7 +297,10 @@ class GenerationService:
         conversation_id: str,
         user_message: str,
         persona: dict[str, Any],
+        *,
+        persona_key: str | None = None,
     ) -> dict[str, Any]:
+        key = self._normalize_persona_key(persona_key)
         recent = retrieval_service.get_recent_messages(conversation_id, limit=24)
         online_memory = retrieval_service.retrieve_online_memory(conversation_id, user_message, k=12)
         segments = retrieval_service.retrieve_similar_segments(
@@ -262,6 +308,7 @@ class GenerationService:
             top_k_hits=settings.semantic_top_segments,
             window_before=settings.segment_window_before,
             window_after=settings.segment_window_after,
+            persona_key=key,
         )
 
         recent_block = [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in recent[-12:]]
@@ -277,7 +324,11 @@ class GenerationService:
                 break
 
         if len(style_block) < 10:
-            style_refs = retrieval_service.retrieve_baseline_style(user_message, k=settings.retrieval_top_k)
+            style_refs = retrieval_service.retrieve_baseline_style(
+                user_message,
+                k=settings.retrieval_top_k,
+                persona_key=key,
+            )
             style_block.extend([r["content"] for r in style_refs[: max(0, 18 - len(style_block))]])
             style_block = style_block[:18]
 
@@ -290,7 +341,8 @@ class GenerationService:
         )
 
         logger.info(
-            "rag_context conversation=%s recent=%d online=%d style_refs=%d segments=%d rag_chars=%d",
+            "rag_context persona=%s conversation=%s recent=%d online=%d style_refs=%d segments=%d rag_chars=%d",
+            key,
             conversation_id,
             len(recent_block),
             len(online_block),
@@ -314,6 +366,7 @@ class GenerationService:
                 logger.info("rag_best_segment_lines\n%s", _clip(raw_lines))
 
         return {
+            "persona_key": key,
             "recent_block": recent_block,
             "online_block": online_block,
             "style_block": style_block,
@@ -329,10 +382,13 @@ class GenerationService:
         style: dict[str, Any],
         preference: dict[str, Any],
         context: dict[str, Any],
+        *,
+        persona_key: str | None = None,
     ) -> str:
         segments = context.get("segments", [])[:3]
         frame = context.get("frame", {})
         persona = context.get("persona", {})
+        nickname_rule = self._nickname_rule_text(persona, persona_key=persona_key)
         return f"""
 你是“Doppelganger对话规划器”。目标：不偏题，并且保持目标人物语气。
 
@@ -342,7 +398,7 @@ class GenerationService:
 3. 最后保持长期人格一致。
 
 硬约束：
-1. 亲昵称呼只能使用“{settings.strict_nickname}”，禁止其他称呼。
+1. {nickname_rule}
 2. 输出必须是 JSON，不要输出解释。
 
 用户当前消息：{user_message}
@@ -371,10 +427,13 @@ class GenerationService:
         plan: dict[str, Any],
         context: dict[str, Any],
         candidate_count: int,
+        *,
+        persona_key: str | None = None,
     ) -> str:
         segments = context.get("segments", [])[:3]
         frame = context.get("frame", {})
         persona = context.get("persona", {})
+        nickname_rule = self._nickname_rule_text(persona, persona_key=persona_key)
         return f"""
 你就是目标人物本人在聊天。请根据历史原文学习表达，并优先承接当前语境。
 
@@ -382,7 +441,7 @@ class GenerationService:
 1. 不偏题：必须回应用户当前这句话，不要跳到无关话题。
 2. 语义优先：先把当前问题接住，再补充情绪和语气。
 3. RAG原文用于学习表达和语义关联，不要照抄整句。
-4. 亲昵称呼只能是“{settings.strict_nickname}”。
+4. {nickname_rule}
 5. 禁止输出 JSON 说明、模型解释、客服腔、教程腔。
 6. 输出严格 JSON，不要 markdown。
 7. 你的回复必须能把对话继续下去，避免只复述用户原话。
@@ -432,14 +491,17 @@ class GenerationService:
         frame: dict[str, Any],
         persona: dict[str, Any],
         bubbles: list[str],
+        *,
+        persona_key: str | None = None,
     ) -> str:
+        nickname_rule = self._nickname_rule_text(persona, persona_key=persona_key)
         return f"""
 请做“最小改写修复”。目标：保持原语气和句式，只修复偏题或断聊部分，让回复贴合当前语境并能继续聊下去。
 
 要求：
 1. 只改必要的词句，不要整段重写。
 2. 回复里至少给一个可接续点（追问、确认、补充）。
-3. 亲昵称呼只能使用“{settings.strict_nickname}”。
+3. {nickname_rule}
 4. 输出 JSON，不要解释。
 
 用户当前消息：{user_message}
@@ -454,7 +516,13 @@ class GenerationService:
 }}
 """.strip()
 
-    def _hard_filter(self, bubbles: list[str]) -> tuple[bool, str]:
+    def _hard_filter(
+        self,
+        bubbles: list[str],
+        *,
+        persona: dict[str, Any] | None = None,
+        persona_key: str | None = None,
+    ) -> tuple[bool, str]:
         if not bubbles:
             return False, "empty"
         if any(not b.strip() for b in bubbles):
@@ -463,7 +531,19 @@ class GenerationService:
             return False, "ui_artifact"
         if any(META_ARTIFACT_RE.search(b) for b in bubbles):
             return False, "meta_artifact"
-        if FORBIDDEN_WORD_RE and any(FORBIDDEN_WORD_RE.search(b) for b in bubbles):
+        strict, forbidden = self._nickname_policy(persona or {}, persona_key=persona_key)
+        if strict:
+            wrong_fixed = re.compile(r"(宝贝|宝宝|老婆|老公|亲亲|宝子|乖乖)")
+            if any(wrong_fixed.search(b) for b in bubbles):
+                if any(strict in b for b in bubbles):
+                    pass
+                else:
+                    return False, "forbidden_nickname"
+        if forbidden:
+            pat = re.compile("|".join(re.escape(x) for x in forbidden if x))
+            if any(pat.search(b) for b in bubbles):
+                return False, "forbidden_nickname"
+        elif FORBIDDEN_WORD_RE and any(FORBIDDEN_WORD_RE.search(b) for b in bubbles):
             return False, "forbidden_nickname"
         if any(len(b) > 50 for b in bubbles):
             return False, "too_long"
@@ -835,6 +915,7 @@ class GenerationService:
                     frame=context.get("frame", {}),
                     persona=context.get("persona", {}),
                     bubbles=bubbles,
+                    persona_key=context.get("persona_key"),
                 ),
                 temperature=0.15,
                 max_output_tokens=420,
@@ -851,7 +932,11 @@ class GenerationService:
                 reason = "repair_invalid_json"
             repaired = [_sanitize_bubble(x) for x in vals]
             repaired = [x for x in repaired if x]
-            ok, _ = self._hard_filter(repaired)
+            ok, _ = self._hard_filter(
+                repaired,
+                persona=context.get("persona", {}),
+                persona_key=context.get("persona_key"),
+            )
             if not ok:
                 return None
             return repaired, reason
@@ -859,16 +944,22 @@ class GenerationService:
             logger.warning("repair_failed error=%s", exc)
             return None
 
-    def _fallback_lines(self, user_message: str, frame: dict[str, Any], persona: dict[str, Any]) -> list[str]:
+    def _fallback_lines(
+        self,
+        user_message: str,
+        frame: dict[str, Any],
+        persona: dict[str, Any],
+        *,
+        persona_key: str | None = None,
+    ) -> list[str]:
         snippet = user_message.strip().replace("\n", " ")
         if len(snippet) > settings.context_frame_anchor_chars:
             snippet = snippet[: settings.context_frame_anchor_chars].rstrip() + "…"
-        flat = flatten_persona(persona)
-        nickname = (
-            flat.get("relationship", {}).get("strict_nickname")
-            or settings.strict_nickname
-        )
-        first = _sanitize_bubble(f"{nickname}，我在，先接住你这个点。")
+        strict, _ = self._nickname_policy(persona, persona_key=persona_key)
+        if strict:
+            first = _sanitize_bubble(f"{strict}，我在，先接住你这个点。")
+        else:
+            first = _sanitize_bubble("我在，先接住你这个点。")
         second = _sanitize_bubble(f"你刚刚说的是「{snippet}」，我按这个继续。")
         lines = [x for x in [first, second] if x]
         return lines[:2] or ["我在", "你继续说，我接得住"]
@@ -882,15 +973,38 @@ class GenerationService:
             out.append(total)
         return out
 
-    def generate(self, conversation_id: str, user_message: str) -> GenerationResult:
-        logger.info("chat_generate_start conversation=%s user=%s", conversation_id, _clip(user_message))
-        style, preference, persona = self._load_profiles()
-        context = self._build_context_block(conversation_id, user_message, persona)
+    def generate(
+        self,
+        conversation_id: str,
+        user_message: str,
+        *,
+        persona_key: str | None = None,
+    ) -> GenerationResult:
+        key = self._normalize_persona_key(persona_key)
+        logger.info(
+            "chat_generate_start persona=%s conversation=%s user=%s",
+            key,
+            conversation_id,
+            _clip(user_message),
+        )
+        style, preference, persona = self._load_profiles(key)
+        context = self._build_context_block(
+            conversation_id,
+            user_message,
+            persona,
+            persona_key=key,
+        )
         client = get_gemini_client()
 
         planner_result = client.generate(
             primary_model=settings.gemini_pro_model,
-            prompt=self._plan_prompt(user_message, style, preference, context),
+            prompt=self._plan_prompt(
+                user_message,
+                style,
+                preference,
+                context,
+                persona_key=key,
+            ),
             temperature=0.25,
             max_output_tokens=900,
             response_mime_type="application/json",
@@ -924,7 +1038,13 @@ class GenerationService:
 
         generator_result = client.generate(
             primary_model=settings.gemini_pro_model,
-            prompt=self._generation_prompt(user_message, plan, context, candidate_count),
+            prompt=self._generation_prompt(
+                user_message,
+                plan,
+                context,
+                candidate_count,
+                persona_key=key,
+            ),
             temperature=0.72,
             max_output_tokens=2800,
             response_mime_type="application/json",
@@ -951,7 +1071,11 @@ class GenerationService:
         for item in raw_candidates:
             bubbles = [_sanitize_bubble(x) for x in item.get("bubbles", [])]
             bubbles = [x for x in bubbles if x]
-            ok, reason = self._hard_filter(bubbles)
+            ok, reason = self._hard_filter(
+                bubbles,
+                persona=persona,
+                persona_key=key,
+            )
             if not ok:
                 continue
             prelim.append({"bubbles": bubbles, "strategy": str(item.get("strategy") or ""), "filter_reason": reason})
@@ -991,7 +1115,12 @@ class GenerationService:
 
         if not scored:
             logger.warning("candidate_pool_empty trigger_fallback=true")
-            fallback_lines = self._fallback_lines(user_message, context.get("frame", {}), persona)
+            fallback_lines = self._fallback_lines(
+                user_message,
+                context.get("frame", {}),
+                persona,
+                persona_key=key,
+            )
             fallback_metrics = self._score_candidate(
                 user_message=user_message,
                 bubbles=fallback_lines,
@@ -1114,7 +1243,12 @@ class GenerationService:
             persona_broken = settings.enable_persona_guard and persona_now < max(0.2, settings.persona_guard_repair_threshold - 0.25)
             flow_broken = flow_now < 0.15 and float(selected.get("relevance_score", 0.0)) < 0.45
             if too_offtopic or persona_broken or flow_broken:
-                selected["bubbles"] = self._fallback_lines(user_message, context.get("frame", {}), persona)
+                selected["bubbles"] = self._fallback_lines(
+                    user_message,
+                    context.get("frame", {}),
+                    persona,
+                    persona_key=key,
+                )
                 selected["strategy"] = "fallback_persona"
                 fallback_metrics = self._score_candidate(
                     user_message=user_message,
@@ -1139,7 +1273,8 @@ class GenerationService:
 
         delays = self._compute_delays(selected["bubbles"])
         logger.info(
-            "chat_generate_done selected_index=%d strategy=%s final_path=%s offtopic=%.4f persona=%.4f",
+            "chat_generate_done persona=%s selected_index=%d strategy=%s final_path=%s offtopic=%.4f persona=%.4f",
+            key,
             selected_index,
             selected.get("strategy", ""),
             final_path,
@@ -1171,6 +1306,7 @@ class GenerationService:
                     "long": round(float(selected.get("persona_score", 0.0)), 4),
                 },
                 "rag_chars": int(context.get("rag_chars", 0)),
+                "persona_key": key,
             },
         )
 

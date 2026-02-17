@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from ..schemas import FeedbackRequest, FeedbackResponse
 from ..services.evolution import evolution_service
 from ..services.memory import memory_service
+from ..services.persona_routing import resolve_persona_key_from_conversation_id
 
 router = APIRouter(prefix="/api", tags=["feedback"])
 logger = logging.getLogger("doppelganger.feedback")
@@ -18,8 +19,10 @@ def feedback(req: FeedbackRequest) -> FeedbackResponse:
     if not message_ids:
         raise HTTPException(status_code=400, detail="message_ids is empty")
 
+    persona_key = resolve_persona_key_from_conversation_id(req.conversation_id)
     logger.info(
-        "api_feedback_in conversation=%s message_ids=%s comment=%s",
+        "api_feedback_in persona=%s conversation=%s message_ids=%s comment=%s",
+        persona_key,
         req.conversation_id,
         message_ids,
         req.comment,
@@ -33,9 +36,11 @@ def feedback(req: FeedbackRequest) -> FeedbackResponse:
         conversation_id=req.conversation_id,
         message_ids=message_ids,
         comment=req.comment,
+        persona_key=persona_key,
     )
     logger.info(
-        "api_feedback_done conversation=%s accepted=%s pref_version=%s summary=%s",
+        "api_feedback_done persona=%s conversation=%s accepted=%s pref_version=%s summary=%s",
+        persona_key,
         req.conversation_id,
         result["accepted_count"],
         result["preference_version"],

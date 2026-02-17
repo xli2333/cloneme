@@ -13,6 +13,10 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _split_path_csv(value: str) -> list[Path]:
+    return [Path(item.strip()).resolve() for item in value.split(",") if item.strip()]
+
+
 @dataclass(slots=True)
 class Settings:
     app_name: str = field(default_factory=lambda: os.getenv("APP_NAME", "Doppelganger"))
@@ -103,10 +107,35 @@ class Settings:
             os.getenv("USER_SENDER_CANDIDATES", "dxa🥰,dxa??,dxa")
         )
     )
+    dxa_persona_key: str = field(default_factory=lambda: os.getenv("DXA_PERSONA_KEY", "dxa").strip() or "dxa")
+    friends_persona_key: str = field(
+        default_factory=lambda: os.getenv("FRIENDS_PERSONA_KEY", "friends").strip() or "friends"
+    )
+    friends_chat_data_paths: list[Path] = field(
+        default_factory=lambda: _split_path_csv(
+            os.getenv(
+                "FRIENDS_CHAT_DATA_PATHS",
+                "data/lxq_chat_data.json,data/Yucheng_Wang_chat_data.json,data/电源_chat_data.json.json",
+            )
+        )
+    )
+    friends_user_sender_candidates: list[str] = field(
+        default_factory=lambda: _split_csv(
+            os.getenv("FRIENDS_USER_SENDER_CANDIDATES", "lxq,Yucheng Wang,电源")
+        )
+    )
     strict_nickname: str = field(default_factory=lambda: os.getenv("STRICT_NICKNAME", "宝贝"))
     forbidden_nicknames: list[str] = field(
         default_factory=lambda: _split_csv(
             os.getenv("FORBIDDEN_NICKNAMES", "亲亲,宝宝,老婆,老公,宝子,乖乖")
+        )
+    )
+    friends_strict_nickname: str = field(
+        default_factory=lambda: os.getenv("FRIENDS_STRICT_NICKNAME", "").strip()
+    )
+    friends_forbidden_nicknames: list[str] = field(
+        default_factory=lambda: _split_csv(
+            os.getenv("FRIENDS_FORBIDDEN_NICKNAMES", "宝贝,宝宝,老婆,老公,亲亲,宝子,乖乖")
         )
     )
 

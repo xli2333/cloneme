@@ -9,6 +9,7 @@ from ..services.gemini_client import get_gemini_client
 from ..services.retrieval import retrieval_service
 from ..services.semantic_index import semantic_index_service
 from ..services.memory import memory_service
+from ..services.persona_routing import resolve_persona_key_from_conversation_id
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -24,11 +25,17 @@ def health() -> HealthResponse:
 
 
 @router.get("/profiles")
-def profiles() -> dict:
-    style = db.get_profile("style")
-    pref = db.get_profile("preference")
-    persona = db.get_persona_profile()
+def profiles(persona_key: str = "", conversation_id: str = "") -> dict:
+    key = (persona_key or "").strip()
+    if not key and conversation_id:
+        key = resolve_persona_key_from_conversation_id(conversation_id)
+    if not key:
+        key = settings.dxa_persona_key
+    style = db.get_profile(f"style:{key}") or (db.get_profile("style") if key == settings.dxa_persona_key else None)
+    pref = db.get_profile(f"preference:{key}") or (db.get_profile("preference") if key == settings.dxa_persona_key else None)
+    persona = db.get_persona_profile(key) or (db.get_persona_profile("default") if key == settings.dxa_persona_key else None)
     return {
+        "persona_key": key,
         "style_version": style["version"] if style else 0,
         "preference_version": pref["version"] if pref else 0,
         "persona_version": persona["version"] if persona else 0,
@@ -47,16 +54,23 @@ def models() -> dict:
 
 
 @router.get("/rag/preview")
-def rag_preview(q: str, top_k: int = 3) -> dict:
+def rag_preview(q: str, top_k: int = 3, persona_key: str = "", conversation_id: str = "") -> dict:
     top_k = max(1, min(top_k, 12))
+    key = (persona_key or "").strip()
+    if not key and conversation_id:
+        key = resolve_persona_key_from_conversation_id(conversation_id)
+    if not key:
+        key = settings.dxa_persona_key
     segments = retrieval_service.retrieve_similar_segments(
         q,
         top_k_hits=top_k,
         window_before=settings.segment_window_before,
         window_after=settings.segment_window_after,
+        persona_key=key,
     )
     return {
         "query": q,
+        "persona_key": key,
         "count": len(segments),
         "segments": segments,
     }
