@@ -25,7 +25,12 @@ def chat(req: ChatRequest) -> ChatResponse:
     if not text:
         raise HTTPException(status_code=400, detail="message cannot be empty")
 
-    logger.info("api_chat_in conversation=%s text=%s", req.conversation_id, text)
+    logger.info(
+        "api_chat_in mode=%s conversation=%s text=%s",
+        settings.dxa_persona_key,
+        req.conversation_id,
+        text,
+    )
     user_message_id = memory_service.add_message(
         conversation_id=req.conversation_id,
         role="user",
@@ -102,6 +107,16 @@ def chat(req: ChatRequest) -> ChatResponse:
             content=bubble,
         )
         assistant_message_ids.append(aid)
+
+    rag_overview = dict(result.debug.get("rag_overview", {}) or {})
+    logger.info(
+        "api_chat_out mode=%s conversation=%s final_path=%s rag_blocks=%s top_segment_ids=%s",
+        str(result.debug.get("persona_key", settings.dxa_persona_key)),
+        req.conversation_id,
+        str(result.debug.get("final_path", "")),
+        dict(rag_overview.get("blocks", {}) or {}),
+        [int(x.get("segment_id", 0)) for x in list(rag_overview.get("top_segments", []) or [])[:5]],
+    )
 
     if assistant_message_ids:
         last_meta = memory_service.get_message_meta(assistant_message_ids[-1])

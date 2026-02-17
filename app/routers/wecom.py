@@ -87,6 +87,18 @@ def _fallback_text(content: str, persona_key: str) -> str:
     return f"我在，先按你这句「{snippet}」接着聊。"
 
 
+def _log_rag_overview(persona_key: str, conversation_id: str, debug: dict) -> None:
+    rag = dict(debug.get("rag_overview", {}) or {})
+    logger.info(
+        "wecom_generate_done mode=%s conversation=%s final_path=%s rag_blocks=%s top_segment_ids=%s",
+        persona_key,
+        conversation_id,
+        str(debug.get("final_path", "")),
+        dict(rag.get("blocks", {}) or {}),
+        [int(x.get("segment_id", 0)) for x in list(rag.get("top_segments", []) or [])[:5]],
+    )
+
+
 def _handle_text_message(msg: dict[str, str]) -> None:
     from_user = msg.get("FromUserName", "").strip()
     content = msg.get("Content", "").strip()
@@ -96,6 +108,13 @@ def _handle_text_message(msg: dict[str, str]) -> None:
 
     persona_key = resolve_persona_key_from_user_id(from_user)
     conversation_id = f"wecom:{agent_id}:{from_user.lower()}"
+    logger.info(
+        "wecom_in mode=%s conversation=%s from_user=%s text=%s",
+        persona_key,
+        conversation_id,
+        from_user,
+        content,
+    )
     user_message_id = memory_service.add_message(
         conversation_id=conversation_id,
         role="user",
@@ -158,9 +177,10 @@ def _handle_text_message(msg: dict[str, str]) -> None:
                     else None
                 ),
             )
+        _log_rag_overview(persona_key, conversation_id, result.debug)
         reply_text = "\n".join([x.strip() for x in result.bubbles if x.strip()]).strip()
     except Exception as exc:
-        logger.exception("wecom generation failed persona=%s error=%s", persona_key, exc)
+        logger.exception("wecom generation failed mode=%s conversation=%s error=%s", persona_key, conversation_id, exc)
         reply_text = _fallback_text(content, persona_key)
         aid = memory_service.add_message(
             conversation_id=conversation_id,
@@ -181,7 +201,7 @@ def _handle_text_message(msg: dict[str, str]) -> None:
     try:
         wecom_client.send_text_message(from_user, reply_text)
     except WeComApiError as exc:
-        logger.error("wecom send failed: user=%s persona=%s error=%s", from_user, persona_key, exc)
+        logger.error("wecom send failed: user=%s mode=%s error=%s", from_user, persona_key, exc)
 
 
 @router.get(CALLBACK_PATH)

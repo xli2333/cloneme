@@ -374,6 +374,34 @@ class GenerationService:
                 raw_lines = "\n".join([f"{x.get('role')}: {x.get('content')}" for x in top.get("lines", [])])
                 logger.info("rag_best_segment_lines\n%s", _clip(raw_lines))
 
+        top_segments = [
+            {
+                "segment_id": int(seg.get("segment_id", 0)),
+                "retrieval": round(float(seg.get("retrieval_score", 0.0)), 4),
+                "semantic": round(float(seg.get("semantic_score", 0.0)), 4),
+                "lexical": round(float(seg.get("lexical_score", 0.0)), 4),
+                "anchor": _clip(str(seg.get("anchor_text", ""))),
+            }
+            for seg in segments[:5]
+        ]
+        rag_overview = {
+            "blocks": {
+                "recent": len(recent_block),
+                "online_memory": len(online_block),
+                "style_refs": len(style_block),
+                "historical_segments": len(segments),
+            },
+            "top_segments": top_segments,
+            "rag_chars": rag_chars,
+        }
+        logger.info(
+            "rag_blocks persona=%s conversation=%s blocks=%s top_segment_ids=%s",
+            key,
+            conversation_id,
+            rag_overview["blocks"],
+            [x["segment_id"] for x in top_segments],
+        )
+
         return {
             "persona_key": key,
             "recent_block": recent_block,
@@ -383,6 +411,7 @@ class GenerationService:
             "frame": frame,
             "persona": persona_brief(persona, phrase_limit=14),
             "temporal_context": temporal,
+            "rag_overview": rag_overview,
             "rag_chars": rag_chars,
         }
 
@@ -1386,6 +1415,7 @@ class GenerationService:
                 "time_score": float(selected.get("time_score", 0.0)),
                 "time_ack_used": bool(time_ack_used),
                 "temporal_context": context.get("temporal_context", {}),
+                "rag_overview": context.get("rag_overview", {}),
                 "memory_contribution": {
                     "short": round(float(selected.get("flow_score", 0.0)), 4),
                     "medium": round(float(selected.get("segment_score", 0.0)), 4),

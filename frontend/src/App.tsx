@@ -611,6 +611,20 @@ export default function App() {
       }
 
       const chat = data as ChatResponse
+      const debug = (chat.debug || {}) as Record<string, unknown>
+      const personaMode = String(debug.persona_key || 'dxa')
+      const ragOverview = (debug.rag_overview || {}) as Record<string, unknown>
+      const ragBlocks = (ragOverview.blocks || {}) as Record<string, unknown>
+      const ragTop = Array.isArray(ragOverview.top_segments) ? ragOverview.top_segments : []
+      console.log('[chat-debug]', {
+        conversationId: batch.conversationId,
+        personaMode,
+        finalPath: String(debug.final_path || ''),
+        ragBlocks,
+        topSegmentIds: ragTop
+          .map((x) => Number((x as Record<string, unknown>).segment_id || 0))
+          .filter((x) => Number.isFinite(x) && x > 0),
+      })
       replaceTempBatchWithPersisted(batch, chat.user_message_id)
 
       chat.bubbles.forEach((bubble, i) => {
