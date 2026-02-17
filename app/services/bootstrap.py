@@ -354,18 +354,75 @@ def _build_segments_from_rows(rows: list[dict[str, Any]], persona_key: str) -> l
 
 def _read_chat_rows(data_paths: list[Path]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    loaded_paths: set[str] = set()
     for path in data_paths:
-        if not path.exists():
+        resolved = _resolve_chat_data_path(path)
+        if not resolved:
             logger.warning("chat data missing: %s", path)
             continue
+        resolved_key = str(resolved.resolve())
+        if resolved_key in loaded_paths:
+            logger.info("chat data duplicate skipped: %s", resolved)
+            continue
+        loaded_paths.add(resolved_key)
+        if resolved != path:
+            logger.info("chat data resolved: %s -> %s", path, resolved)
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
         except Exception as exc:
-            logger.warning("chat data load failed path=%s error=%s", path, exc)
+            logger.warning("chat data load failed path=%s error=%s", resolved, exc)
             continue
         if isinstance(payload, list):
             out.extend([x for x in payload if isinstance(x, dict)])
     return out
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in paths:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _resolve_chat_data_path(path: Path) -> Path | None:
+    candidates: list[Path] = [path]
+    file_name = path.name
+    tail_two = Path(*path.parts[-2:]) if len(path.parts) >= 2 else Path(file_name)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    db_parent = settings.sqlite_path.parent
+    roots = [
+        Path.cwd(),
+        repo_root,
+        db_parent,
+        db_parent.parent,
+    ]
+
+    for root in roots:
+        if path.is_absolute():
+            candidates.append(root / tail_two)
+        else:
+            candidates.append((root / path).resolve())
+        candidates.append((root / "data" / file_name).resolve())
+        candidates.append((root / "runtime" / "data" / file_name).resolve())
+
+    candidates.extend(
+        [
+            Path("/opt/render/project/src/data") / file_name,
+            Path("/opt/render/project/src/runtime/data") / file_name,
+            Path("/app/data") / file_name,
+        ]
+    )
+
+    for candidate in _dedupe_paths(candidates):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _normalize_rows(raw_rows: list[dict[str, Any]], source: PersonaBootstrapSource) -> list[dict[str, Any]]:
@@ -407,6 +464,28 @@ def _load_rows_for_persona(conn, persona_key: str) -> list[dict[str, Any]]:
         (persona_key,),
     ).fetchall()
     return rows
+
+
+def _assistant_text_count_for_persona(conn, persona_key: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM baseline_messages
+        WHERE persona_key = ?
+          AND role = 'assistant'
+          AND msg_type = '1'
+          AND is_garbled = 0
+          AND TRIM(content) <> ''
+        """,
+        (persona_key,),
+    ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def _aliases_equal(left: list[str], right: list[str]) -> bool:
+    left_norm = {x.strip().lower() for x in left if x and x.strip()}
+    right_norm = {x.strip().lower() for x in right if x and x.strip()}
+    return left_norm == right_norm
 
 
 def _rebuild_segments_for_persona(conn, persona_key: str) -> int:
@@ -514,18 +593,74 @@ def _upsert_profiles_for_persona(conn, source: PersonaBootstrapSource) -> tuple[
         (source.key,),
     ).fetchone()
     if style_row and pref_row and persona_row:
-        row = conn.execute(
+        style_payload_row = conn.execute(
+            "SELECT payload_json, version FROM profiles WHERE profile_type = ?",
+            (style_key,),
+        ).fetchone()
+        persona_payload_row = conn.execute(
             "SELECT payload_json, version FROM persona_profiles WHERE profile_key = ?",
             (source.key,),
         ).fetchone()
-        if row:
-            payload = json.loads(str(row.get("payload_json") or "{}"))
-            normalized = normalize_persona_payload(payload)
-            if normalized != payload:
+
+        style_payload = json.loads(str(style_payload_row.get("payload_json") or "{}")) if style_payload_row else {}
+        existing_assistant_count = int(style_payload.get("assistant_text_count", 0))
+        current_assistant_count = _assistant_text_count_for_persona(conn, source.key)
+        nickname_policy = style_payload.get("nickname_policy", {})
+        style_nickname_mismatch = (
+            str(nickname_policy.get("strict_only", "")) != source.strict_nickname
+            or list(nickname_policy.get("forbidden", [])) != source.forbidden_nicknames
+        )
+
+        persona_payload = (
+            json.loads(str(persona_payload_row.get("payload_json") or "{}"))
+            if persona_payload_row
+            else {}
+        )
+        normalized_persona = normalize_persona_payload(persona_payload)
+        rel = normalized_persona.get("core_persona", {}).get("relationship", {})
+        relation_mismatch = (
+            str(rel.get("strict_nickname", "")) != source.strict_nickname
+            or list(rel.get("forbidden_nicknames", [])) != source.forbidden_nicknames
+            or not _aliases_equal(list(rel.get("primary_user_aliases", [])), source.user_aliases)
+        )
+
+        needs_refresh = (
+            existing_assistant_count != current_assistant_count
+            or style_nickname_mismatch
+            or relation_mismatch
+        )
+        if needs_refresh:
+            rows = _load_rows_for_persona(conn, source.key)
+            style_profile = _compute_style_profile(
+                rows,
+                strict_nickname=source.strict_nickname,
+                forbidden_nicknames=source.forbidden_nicknames,
+            )
+            preference_profile = _default_preference_profile(style_profile, source)
+            persona_profile = _default_persona_profile(style_profile, rows, source)
+            style_ver = _upsert_profile_conn(conn, style_key, style_profile, bump_version=True)
+            pref_ver = _upsert_profile_conn(conn, pref_key, preference_profile, bump_version=True)
+            persona_ver = _upsert_persona_profile_conn(conn, source.key, persona_profile, bump_version=True)
+            logger.info(
+                "persona profiles refreshed persona=%s assistant_text_count=%d->%d nickname_mismatch=%s relation_mismatch=%s",
+                source.key,
+                existing_assistant_count,
+                current_assistant_count,
+                style_nickname_mismatch,
+                relation_mismatch,
+            )
+            if source.key == settings.dxa_persona_key:
+                _upsert_profile_conn(conn, "style", style_profile)
+                _upsert_profile_conn(conn, "preference", preference_profile)
+                _upsert_persona_profile_conn(conn, "default", persona_profile)
+            return style_ver, pref_ver, persona_ver
+
+        if persona_payload_row:
+            if normalized_persona != persona_payload:
                 ver = _upsert_persona_profile_conn(
                     conn,
                     source.key,
-                    normalized,
+                    normalized_persona,
                     bump_version=True,
                 )
                 return int(style_row["version"]), int(pref_row["version"]), ver
