@@ -71,6 +71,9 @@ class Settings:
     chat_data_path: Path = field(
         default_factory=lambda: Path(os.getenv("CHAT_DATA_PATH", "data/chat_data.json")).resolve()
     )
+    bootstrap_allow_json_ingest: bool = field(
+        default_factory=lambda: os.getenv("BOOTSTRAP_ALLOW_JSON_INGEST", "false").lower() == "true"
+    )
     sqlite_path: Path = field(
         default_factory=lambda: Path(os.getenv("SQLITE_PATH", "runtime/doppelganger.db")).resolve()
     )

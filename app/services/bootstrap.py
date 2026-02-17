@@ -709,20 +709,26 @@ def _ensure_persona_baseline(conn, source: PersonaBootstrapSource) -> dict[str, 
     ingested = 0
 
     if baseline_count == 0:
-        raw_rows = _read_chat_rows(source.data_paths)
-        normalized_rows = _normalize_rows(raw_rows, source)
-        if normalized_rows:
-            conn.executemany(
-                """
-                INSERT INTO baseline_messages
-                  (msg_id, sender, msg_type, timestamp_raw, timestamp_unix, persona_key, role, content, is_garbled, created_at)
-                VALUES
-                  (:msg_id, :sender, :msg_type, :timestamp_raw, :timestamp_unix, :persona_key, :role, :content, :is_garbled, :created_at)
-                """,
-                normalized_rows,
+        if settings.bootstrap_allow_json_ingest:
+            raw_rows = _read_chat_rows(source.data_paths)
+            normalized_rows = _normalize_rows(raw_rows, source)
+            if normalized_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO baseline_messages
+                      (msg_id, sender, msg_type, timestamp_raw, timestamp_unix, persona_key, role, content, is_garbled, created_at)
+                    VALUES
+                      (:msg_id, :sender, :msg_type, :timestamp_raw, :timestamp_unix, :persona_key, :role, :content, :is_garbled, :created_at)
+                    """,
+                    normalized_rows,
+                )
+                ingested = len(normalized_rows)
+                baseline_count = ingested
+        else:
+            logger.info(
+                "json_ingest_disabled persona=%s baseline empty; relying on runtime db assets only",
+                source.key,
             )
-            ingested = len(normalized_rows)
-            baseline_count = ingested
 
     seg_row = conn.execute(
         "SELECT COUNT(*) AS c FROM baseline_segments WHERE persona_key = ?",
@@ -771,4 +777,5 @@ def bootstrap_if_needed() -> dict[str, Any]:
         "segments": int(seg_total_row["c"]) if seg_total_row else 0,
         "personas": persona_results,
         "bootstrapped": any(int(item.get("ingested_messages", 0)) > 0 for item in persona_results),
+        "json_ingest_enabled": settings.bootstrap_allow_json_ingest,
     }

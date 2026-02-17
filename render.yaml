@@ -11,6 +11,8 @@
     envVars:
       - key: APP_ENV
         value: production
+      - key: BOOTSTRAP_ALLOW_JSON_INGEST
+        value: "false"
       - key: HOST
         value: 0.0.0.0
       - key: LOG_LEVEL
