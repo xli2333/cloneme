@@ -12,8 +12,10 @@ from typing import Any
 from ..config import settings
 from ..db import db
 from .gemini_client import get_gemini_client
+from .memory import memory_service
 from .persona import flatten_persona, normalize_persona_payload, persona_brief
 from .retrieval import retrieval_service
+from .temporal import build_temporal_context, detect_time_ack_used
 
 logger = logging.getLogger("doppelganger.generation")
 
@@ -299,13 +301,20 @@ class GenerationService:
         persona: dict[str, Any],
         *,
         persona_key: str | None = None,
+        temporal_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = self._normalize_persona_key(persona_key)
-        recent = retrieval_service.get_recent_messages(conversation_id, limit=24)
-        online_memory = retrieval_service.retrieve_online_memory(conversation_id, user_message, k=12)
+        temporal = dict(temporal_context or {})
+        gap_bucket = str(temporal.get("gap_bucket", "unknown"))
+        recent_limit = 24 if gap_bucket not in {"within_week", "over_week"} else 18
+        online_k = 12 if gap_bucket not in {"within_week", "over_week"} else 16
+        seg_top = settings.semantic_top_segments if gap_bucket not in {"within_week", "over_week"} else settings.semantic_top_segments + 1
+
+        recent = retrieval_service.get_recent_messages(conversation_id, limit=recent_limit)
+        online_memory = retrieval_service.retrieve_online_memory(conversation_id, user_message, k=online_k)
         segments = retrieval_service.retrieve_similar_segments(
             user_message,
-            top_k_hits=settings.semantic_top_segments,
+            top_k_hits=seg_top,
             window_before=settings.segment_window_before,
             window_after=settings.segment_window_after,
             persona_key=key,
@@ -373,6 +382,7 @@ class GenerationService:
             "segments": segments,
             "frame": frame,
             "persona": persona_brief(persona, phrase_limit=14),
+            "temporal_context": temporal,
             "rag_chars": rag_chars,
         }
 
@@ -388,6 +398,7 @@ class GenerationService:
         segments = context.get("segments", [])[:3]
         frame = context.get("frame", {})
         persona = context.get("persona", {})
+        temporal = context.get("temporal_context", {})
         nickname_rule = self._nickname_rule_text(persona, persona_key=persona_key)
         return f"""
 你是“Doppelganger对话规划器”。目标：不偏题，并且保持目标人物语气。
@@ -396,12 +407,15 @@ class GenerationService:
 1. 先承接当前用户语境，不跑题。
 2. 再用历史原文学习表达习惯。
 3. 最后保持长期人格一致。
+4. 根据时间上下文自然衔接，不要把隔了很久的对话当作刚结束。
 
 硬约束：
 1. {nickname_rule}
 2. 输出必须是 JSON，不要输出解释。
+3. 禁止臆测用户这段时间发生了什么。
 
 用户当前消息：{user_message}
+时间上下文：{json.dumps(temporal, ensure_ascii=False)}
 短期语境框架：{json.dumps(frame, ensure_ascii=False)}
 风格统计：{json.dumps(style, ensure_ascii=False)}
 偏好配置：{json.dumps(preference, ensure_ascii=False)}
@@ -433,6 +447,7 @@ class GenerationService:
         segments = context.get("segments", [])[:3]
         frame = context.get("frame", {})
         persona = context.get("persona", {})
+        temporal = context.get("temporal_context", {})
         nickname_rule = self._nickname_rule_text(persona, persona_key=persona_key)
         return f"""
 你就是目标人物本人在聊天。请根据历史原文学习表达，并优先承接当前语境。
@@ -445,8 +460,11 @@ class GenerationService:
 5. 禁止输出 JSON 说明、模型解释、客服腔、教程腔。
 6. 输出严格 JSON，不要 markdown。
 7. 你的回复必须能把对话继续下去，避免只复述用户原话。
+8. 严格依据时间上下文自然衔接；长间隔可轻量承接，短间隔不要尬寒暄。
+9. 不允许编造“这几天你发生了什么”。
 
 用户当前消息：{user_message}
+时间上下文：{json.dumps(temporal, ensure_ascii=False)}
 短期语境框架：{json.dumps(frame, ensure_ascii=False)}
 规划：{json.dumps(plan, ensure_ascii=False)}
 最近对话：{json.dumps(context['recent_block'], ensure_ascii=False)}
@@ -489,6 +507,7 @@ class GenerationService:
         self,
         user_message: str,
         frame: dict[str, Any],
+        temporal_context: dict[str, Any],
         persona: dict[str, Any],
         bubbles: list[str],
         *,
@@ -503,9 +522,11 @@ class GenerationService:
 2. 回复里至少给一个可接续点（追问、确认、补充）。
 3. {nickname_rule}
 4. 输出 JSON，不要解释。
+5. 时间衔接要自然，避免把隔了很久的话题当成连续上一句。
 
 用户当前消息：{user_message}
 短期语境框架：{json.dumps(frame, ensure_ascii=False)}
+时间上下文：{json.dumps(temporal_context, ensure_ascii=False)}
 长期人格：{json.dumps(persona, ensure_ascii=False)}
 原候选：{json.dumps(bubbles, ensure_ascii=False)}
 
@@ -815,6 +836,38 @@ class GenerationService:
             drift += 0.22
         return float(_clamp(drift, 0.0, 1.0))
 
+    def _time_coherence_score(self, bubbles: list[str], temporal_context: dict[str, Any]) -> float:
+        if not bubbles:
+            return 0.0
+        if not temporal_context:
+            return 0.7
+        bucket = str(temporal_context.get("gap_bucket", "unknown"))
+        should_ack = bool(temporal_context.get("should_time_ack"))
+        ack_cooldown_passed = bool(temporal_context.get("ack_cooldown_passed", True))
+        ack_used = detect_time_ack_used(bubbles)
+        text = "".join(bubbles)
+
+        score = 0.68
+        if bucket in {"immediate", "same_day"}:
+            score += 0.14 if not ack_used else -0.42
+        elif bucket == "within_two_days":
+            score += 0.10 if not ack_used else 0.02
+        elif bucket in {"within_week", "over_week"}:
+            if should_ack:
+                score += 0.20 if ack_used else -0.14
+            else:
+                score += 0.06
+                if ack_used and not ack_cooldown_passed:
+                    score -= 0.34
+        else:
+            score += 0.02
+
+        if re.search(r"(这两天你|你这几天|你上周|最近你是不是一直)", text):
+            score -= 0.24
+        if ack_used and not ack_cooldown_passed:
+            score -= 0.20
+        return float(_clamp(score, 0.0, 1.0))
+
     def _weighted_total(
         self,
         rel: float,
@@ -827,6 +880,7 @@ class GenerationService:
         echo_pen: float,
         offtopic: float,
         preference: dict[str, Any],
+        time_s: float = 0.7,
     ) -> float:
         weights = preference.get("weights", {})
         w_sem = float(weights.get("semantic", 0.45))
@@ -841,10 +895,12 @@ class GenerationService:
             + w_recency * seg_s
             + w_online * ctx_s
             + 0.24 * flow_s
+            + 0.12 * time_s
         )
         pen = copy_pen + echo_pen + settings.offtopic_penalty_weight * offtopic + 0.12 * max(0.0, 0.46 - flow_s)
         if settings.enable_persona_guard:
             pen += settings.persona_guard_penalty_weight * max(0.0, 0.55 - persona_s)
+        pen += 0.08 * max(0.0, 0.45 - time_s)
         return float(_clamp(base - pen, 0.0, 1.0))
 
     def _score_candidate(
@@ -864,6 +920,7 @@ class GenerationService:
         seg_s = self._segment_alignment_score(bubbles, context)
         ctx_s = self._context_score(bubbles, context)
         persona_s = self._persona_consistency_score(bubbles, persona)
+        time_s = self._time_coherence_score(bubbles, context.get("temporal_context", {}))
         offtopic = self._offtopic_score(
             user_message,
             bubbles,
@@ -883,6 +940,7 @@ class GenerationService:
             echo_pen,
             offtopic,
             preference,
+            time_s=time_s,
         )
         return {
             "relevance_score": rel,
@@ -891,6 +949,7 @@ class GenerationService:
             "segment_score": seg_s,
             "context_score": ctx_s,
             "persona_score": persona_s,
+            "time_score": time_s,
             "offtopic_score": offtopic,
             "copy_penalty": copy_pen,
             "echo_penalty": echo_pen,
@@ -913,6 +972,7 @@ class GenerationService:
                 prompt=self._repair_prompt(
                     user_message=user_message,
                     frame=context.get("frame", {}),
+                    temporal_context=context.get("temporal_context", {}),
                     persona=context.get("persona", {}),
                     bubbles=bubbles,
                     persona_key=context.get("persona_key"),
@@ -951,13 +1011,19 @@ class GenerationService:
         persona: dict[str, Any],
         *,
         persona_key: str | None = None,
+        temporal_context: dict[str, Any] | None = None,
     ) -> list[str]:
         snippet = user_message.strip().replace("\n", " ")
         if len(snippet) > settings.context_frame_anchor_chars:
             snippet = snippet[: settings.context_frame_anchor_chars].rstrip() + "…"
         strict, _ = self._nickname_policy(persona, persona_key=persona_key)
-        if strict:
+        should_time_ack = bool((temporal_context or {}).get("should_time_ack"))
+        if strict and should_time_ack:
+            first = _sanitize_bubble(f"{strict}，隔了些时间再聊，我在，先接住你这个点。")
+        elif strict:
             first = _sanitize_bubble(f"{strict}，我在，先接住你这个点。")
+        elif should_time_ack:
+            first = _sanitize_bubble("隔了些时间再聊，我在，先接住你这个点。")
         else:
             first = _sanitize_bubble("我在，先接住你这个点。")
         second = _sanitize_bubble(f"你刚刚说的是「{snippet}」，我按这个继续。")
@@ -988,11 +1054,22 @@ class GenerationService:
             _clip(user_message),
         )
         style, preference, persona = self._load_profiles(key)
+        state_row = memory_service.get_time_state(conversation_id) or {}
+        recent_user_rows = memory_service.get_recent_role_messages(conversation_id, "user", limit=3)
+        temporal_context = build_temporal_context(
+            user_message=user_message,
+            recent_user_rows=recent_user_rows,
+            state_row=state_row,
+        )
+        if state_row:
+            temporal_context["last_topic_summary"] = str(state_row.get("last_topic_summary") or "")
+        temporal_context["open_followups"] = memory_service.list_open_followups(conversation_id, limit=4)
         context = self._build_context_block(
             conversation_id,
             user_message,
             persona,
             persona_key=key,
+            temporal_context=temporal_context,
         )
         client = get_gemini_client()
 
@@ -1120,6 +1197,7 @@ class GenerationService:
                 context.get("frame", {}),
                 persona,
                 persona_key=key,
+                temporal_context=context.get("temporal_context", {}),
             )
             fallback_metrics = self._score_candidate(
                 user_message=user_message,
@@ -1146,6 +1224,7 @@ class GenerationService:
                     "seg": round(float(c.get("segment_score", 0.0)), 4),
                     "ctx": round(float(c.get("context_score", 0.0)), 4),
                     "persona": round(float(c.get("persona_score", 0.0)), 4),
+                    "time": round(float(c.get("time_score", 0.0)), 4),
                     "offtopic": round(float(c.get("offtopic_score", 0.0)), 4),
                     "copy": round(float(c.get("copy_penalty", 0.0)), 4),
                     "echo": round(float(c.get("echo_penalty", 0.0)), 4),
@@ -1248,6 +1327,7 @@ class GenerationService:
                     context.get("frame", {}),
                     persona,
                     persona_key=key,
+                    temporal_context=context.get("temporal_context", {}),
                 )
                 selected["strategy"] = "fallback_persona"
                 fallback_metrics = self._score_candidate(
@@ -1271,15 +1351,18 @@ class GenerationService:
         if final_path == "repair" and float(selected.get("offtopic_score", 0.0)) <= mid * 0.6:
             logger.info("repair_kept stable_of_topic=%.4f", float(selected.get("offtopic_score", 0.0)))
 
+        time_ack_used = detect_time_ack_used(selected["bubbles"])
         delays = self._compute_delays(selected["bubbles"])
         logger.info(
-            "chat_generate_done persona=%s selected_index=%d strategy=%s final_path=%s offtopic=%.4f persona=%.4f",
+            "chat_generate_done persona=%s selected_index=%d strategy=%s final_path=%s offtopic=%.4f persona=%.4f time=%.4f time_ack=%s",
             key,
             selected_index,
             selected.get("strategy", ""),
             final_path,
             float(selected.get("offtopic_score", 0.0)),
             float(selected.get("persona_score", 0.0)),
+            float(selected.get("time_score", 0.0)),
+            time_ack_used,
         )
 
         return GenerationResult(
@@ -1300,10 +1383,14 @@ class GenerationService:
                 "fallback_reason": fallback_reason,
                 "offtopic_score": float(selected.get("offtopic_score", 0.0)),
                 "persona_score": float(selected.get("persona_score", 0.0)),
+                "time_score": float(selected.get("time_score", 0.0)),
+                "time_ack_used": bool(time_ack_used),
+                "temporal_context": context.get("temporal_context", {}),
                 "memory_contribution": {
                     "short": round(float(selected.get("flow_score", 0.0)), 4),
                     "medium": round(float(selected.get("segment_score", 0.0)), 4),
                     "long": round(float(selected.get("persona_score", 0.0)), 4),
+                    "temporal": round(float(selected.get("time_score", 0.0)), 4),
                 },
                 "rag_chars": int(context.get("rag_chars", 0)),
                 "persona_key": key,

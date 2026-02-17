@@ -41,6 +41,8 @@ def profiles(persona_key: str = "", conversation_id: str = "") -> dict:
         "persona_version": persona["version"] if persona else 0,
         "nickname_policy": (pref or {}).get("payload", {}).get("nickname", {}),
         "persona": (persona or {}).get("payload", {}),
+        "time_state": memory_service.get_time_state(conversation_id) if conversation_id else None,
+        "open_followups": memory_service.list_open_followups(conversation_id, limit=8) if conversation_id else [],
     }
 
 

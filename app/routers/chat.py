@@ -32,6 +32,12 @@ def chat(req: ChatRequest) -> ChatResponse:
         content=text,
         message_type="text",
     )
+    user_meta = memory_service.get_message_meta(user_message_id)
+    memory_service.upsert_time_state(
+        conversation_id=req.conversation_id,
+        persona_key=settings.dxa_persona_key,
+        last_user_at=str((user_meta or {}).get("created_at") or ""),
+    )
 
     try:
         result = generation_service.generate(
@@ -61,6 +67,12 @@ def chat(req: ChatRequest) -> ChatResponse:
                 },
             )
             assistant_message_ids.append(aid)
+            assistant_meta = memory_service.get_message_meta(aid)
+            memory_service.upsert_time_state(
+                conversation_id=req.conversation_id,
+                persona_key=settings.dxa_persona_key,
+                last_assistant_at=str((assistant_meta or {}).get("created_at") or ""),
+            )
         return ChatResponse(
             conversation_id=req.conversation_id,
             user_message_id=user_message_id,
@@ -82,7 +94,27 @@ def chat(req: ChatRequest) -> ChatResponse:
             message_type="text",
             metadata={"bubble_index": idx, "delay_ms": delays[idx] if idx < len(delays) else 0},
         )
+        memory_service.maybe_add_followup(
+            conversation_id=req.conversation_id,
+            persona_key=settings.dxa_persona_key,
+            source_message_id=aid,
+            owner_role="assistant",
+            content=bubble,
+        )
         assistant_message_ids.append(aid)
+
+    if assistant_message_ids:
+        last_meta = memory_service.get_message_meta(assistant_message_ids[-1])
+        memory_service.upsert_time_state(
+            conversation_id=req.conversation_id,
+            persona_key=settings.dxa_persona_key,
+            last_assistant_at=str((last_meta or {}).get("created_at") or ""),
+            last_time_ack_at=(
+                str((last_meta or {}).get("created_at") or "")
+                if bool(result.debug.get("time_ack_used"))
+                else None
+            ),
+        )
 
     memory_service.save_candidates(
         conversation_id=req.conversation_id,

@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass, field
+from datetime import timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -137,6 +138,22 @@ class Settings:
         default_factory=lambda: _split_csv(
             os.getenv("FRIENDS_FORBIDDEN_NICKNAMES", "宝贝,宝宝,老婆,老公,亲亲,宝子,乖乖")
         )
+    )
+    app_timezone: str = field(default_factory=lambda: os.getenv("APP_TIMEZONE", "Asia/Shanghai").strip())
+    temporal_ack_cooldown_seconds: int = field(
+        default_factory=lambda: int(os.getenv("TEMPORAL_ACK_COOLDOWN_SECONDS", str(24 * 3600)))
+    )
+    temporal_gap_recent_seconds: int = field(
+        default_factory=lambda: int(os.getenv("TEMPORAL_GAP_RECENT_SECONDS", "600"))
+    )
+    temporal_gap_same_day_seconds: int = field(
+        default_factory=lambda: int(os.getenv("TEMPORAL_GAP_SAME_DAY_SECONDS", "21600"))
+    )
+    temporal_gap_two_days_seconds: int = field(
+        default_factory=lambda: int(os.getenv("TEMPORAL_GAP_TWO_DAYS_SECONDS", str(2 * 24 * 3600)))
+    )
+    temporal_gap_week_seconds: int = field(
+        default_factory=lambda: int(os.getenv("TEMPORAL_GAP_WEEK_SECONDS", str(7 * 24 * 3600)))
     )
 
     retrieval_top_k: int = field(default_factory=lambda: int(os.getenv("RETRIEVAL_TOP_K", "30")))

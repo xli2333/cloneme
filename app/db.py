@@ -122,6 +122,31 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS conversation_time_state (
+                    conversation_id TEXT PRIMARY KEY,
+                    persona_key TEXT NOT NULL DEFAULT 'dxa',
+                    last_user_at TEXT,
+                    last_assistant_at TEXT,
+                    last_time_ack_at TEXT,
+                    last_topic_summary TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_time_state_updated ON conversation_time_state(updated_at);
+
+                CREATE TABLE IF NOT EXISTS conversation_followups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    persona_key TEXT NOT NULL DEFAULT 'dxa',
+                    source_message_id INTEGER NOT NULL DEFAULT 0,
+                    owner_role TEXT NOT NULL DEFAULT 'assistant',
+                    topic TEXT NOT NULL DEFAULT '',
+                    due_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_followups_conv_status ON conversation_followups(conversation_id, status, due_at);
+
                 CREATE TABLE IF NOT EXISTS profiles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_type TEXT NOT NULL UNIQUE,

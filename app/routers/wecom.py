@@ -103,6 +103,12 @@ def _handle_text_message(msg: dict[str, str]) -> None:
         message_type="text",
         metadata={"source": "wecom", "persona_key": persona_key},
     )
+    user_meta = memory_service.get_message_meta(user_message_id)
+    memory_service.upsert_time_state(
+        conversation_id=conversation_id,
+        persona_key=persona_key,
+        last_user_at=str((user_meta or {}).get("created_at") or ""),
+    )
 
     reply_text = ""
     try:
@@ -112,8 +118,9 @@ def _handle_text_message(msg: dict[str, str]) -> None:
             persona_key=persona_key,
         )
         delays = result.debug.get("delays", [])
+        assistant_ids: list[int] = []
         for idx, bubble in enumerate(result.bubbles):
-            memory_service.add_message(
+            aid = memory_service.add_message(
                 conversation_id=conversation_id,
                 role="assistant",
                 content=bubble,
@@ -125,22 +132,48 @@ def _handle_text_message(msg: dict[str, str]) -> None:
                     "delay_ms": int(delays[idx] if idx < len(delays) else 0),
                 },
             )
+            memory_service.maybe_add_followup(
+                conversation_id=conversation_id,
+                persona_key=persona_key,
+                source_message_id=aid,
+                owner_role="assistant",
+                content=bubble,
+            )
+            assistant_ids.append(aid)
         memory_service.save_candidates(
             conversation_id=conversation_id,
             user_message_id=user_message_id,
             candidates=result.candidates,
             selected_index=result.selected_index,
         )
+        if assistant_ids:
+            last_meta = memory_service.get_message_meta(assistant_ids[-1])
+            memory_service.upsert_time_state(
+                conversation_id=conversation_id,
+                persona_key=persona_key,
+                last_assistant_at=str((last_meta or {}).get("created_at") or ""),
+                last_time_ack_at=(
+                    str((last_meta or {}).get("created_at") or "")
+                    if bool(result.debug.get("time_ack_used"))
+                    else None
+                ),
+            )
         reply_text = "\n".join([x.strip() for x in result.bubbles if x.strip()]).strip()
     except Exception as exc:
         logger.exception("wecom generation failed persona=%s error=%s", persona_key, exc)
         reply_text = _fallback_text(content, persona_key)
-        memory_service.add_message(
+        aid = memory_service.add_message(
             conversation_id=conversation_id,
             role="assistant",
             content=reply_text,
             message_type="text",
             metadata={"source": "wecom", "persona_key": persona_key, "fallback": True},
+        )
+        assistant_meta = memory_service.get_message_meta(aid)
+        memory_service.upsert_time_state(
+            conversation_id=conversation_id,
+            persona_key=persona_key,
+            last_assistant_at=str((assistant_meta or {}).get("created_at") or ""),
         )
 
     if not reply_text:
