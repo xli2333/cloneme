@@ -129,7 +129,7 @@ def _handle_text_message(msg: dict[str, str]) -> None:
         last_user_at=str((user_meta or {}).get("created_at") or ""),
     )
 
-    reply_text = ""
+    reply_messages: list[str] = []
     try:
         result = generation_service.generate(
             conversation_id,
@@ -178,14 +178,15 @@ def _handle_text_message(msg: dict[str, str]) -> None:
                 ),
             )
         _log_rag_overview(persona_key, conversation_id, result.debug)
-        reply_text = "\n".join([x.strip() for x in result.bubbles if x.strip()]).strip()
+        reply_messages = [x.strip() for x in result.bubbles if x.strip()]
     except Exception as exc:
         logger.exception("wecom generation failed mode=%s conversation=%s error=%s", persona_key, conversation_id, exc)
-        reply_text = _fallback_text(content, persona_key)
+        fallback_text = _fallback_text(content, persona_key)
+        reply_messages = [fallback_text]
         aid = memory_service.add_message(
             conversation_id=conversation_id,
             role="assistant",
-            content=reply_text,
+            content=fallback_text,
             message_type="text",
             metadata={"source": "wecom", "persona_key": persona_key, "fallback": True},
         )
@@ -196,12 +197,21 @@ def _handle_text_message(msg: dict[str, str]) -> None:
             last_assistant_at=str((assistant_meta or {}).get("created_at") or ""),
         )
 
-    if not reply_text:
-        reply_text = _fallback_text(content, persona_key)
-    try:
-        wecom_client.send_text_message(from_user, reply_text)
-    except WeComApiError as exc:
-        logger.error("wecom send failed: user=%s mode=%s error=%s", from_user, persona_key, exc)
+    if not reply_messages:
+        reply_messages = [_fallback_text(content, persona_key)]
+    for idx, reply_text in enumerate(reply_messages):
+        try:
+            wecom_client.send_text_message(from_user, reply_text)
+        except WeComApiError as exc:
+            logger.error(
+                "wecom send failed: user=%s mode=%s index=%s total=%s error=%s",
+                from_user,
+                persona_key,
+                idx,
+                len(reply_messages),
+                exc,
+            )
+            break
 
 
 @router.get(CALLBACK_PATH)
@@ -251,4 +261,3 @@ async def receive_callback(
         logger.info("wecom skip msg_type=%s", msg_type or "unknown")
 
     return PlainTextResponse("", status_code=200)
-
