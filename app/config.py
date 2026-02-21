@@ -48,6 +48,9 @@ class Settings:
     wecom_merge_idle_seconds: float = field(
         default_factory=lambda: float(os.getenv("WECOM_MERGE_IDLE_SECONDS", "1.2"))
     )
+    wecom_merge_min_wait_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WECOM_MERGE_MIN_WAIT_SECONDS", "5.0"))
+    )
     wecom_merge_incomplete_extra_seconds: float = field(
         default_factory=lambda: float(os.getenv("WECOM_MERGE_INCOMPLETE_EXTRA_SECONDS", "1.0"))
     )

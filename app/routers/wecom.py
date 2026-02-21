@@ -52,12 +52,14 @@ def _safe_seconds(value: float, fallback: float, minimum: float) -> float:
     return max(minimum, parsed)
 
 
-def _merge_settings() -> tuple[float, float, float, float]:
+def _merge_settings() -> tuple[float, float, float, float, float]:
     gap = _safe_seconds(settings.wecom_merge_burst_gap_seconds, 6.0, 0.2)
     idle = _safe_seconds(settings.wecom_merge_idle_seconds, 1.2, 0.2)
+    min_wait = _safe_seconds(settings.wecom_merge_min_wait_seconds, 5.0, 0.2)
     extra = _safe_seconds(settings.wecom_merge_incomplete_extra_seconds, 1.0, 0.0)
-    max_wait = _safe_seconds(settings.wecom_merge_max_wait_seconds, 10.0, idle)
-    return gap, idle, extra, max_wait
+    max_wait = _safe_seconds(settings.wecom_merge_max_wait_seconds, 10.0, max(idle, min_wait))
+    min_wait = min(min_wait, max_wait)
+    return gap, idle, min_wait, extra, max_wait
 
 
 def _merge_key(from_user: str, agent_id: str) -> str:
@@ -107,7 +109,7 @@ def _schedule_burst_flush(key: str, burst_id: int, version: int, delay_seconds: 
 
 
 def _flush_burst_if_ready(key: str, burst_id: int, version: int) -> None:
-    _, idle, extra, max_wait = _merge_settings()
+    _, idle, min_wait, extra, max_wait = _merge_settings()
     now = time.time()
     dispatch_burst: _PendingUserBurst | None = None
     dispatch_reason = ""
@@ -122,13 +124,18 @@ def _flush_burst_if_ready(key: str, burst_id: int, version: int) -> None:
         last_text = burst.parts[-1] if burst.parts else ""
         unfinished = _looks_like_unfinished(last_text)
         hold_seconds = idle + (extra if unfinished else 0.0)
+        required_elapsed = min_wait
 
-        if quiet_seconds < hold_seconds and elapsed_seconds < max_wait:
+        if elapsed_seconds < required_elapsed and elapsed_seconds < max_wait:
+            reschedule_seconds = required_elapsed - elapsed_seconds
+        elif quiet_seconds < hold_seconds and elapsed_seconds < max_wait:
             reschedule_seconds = hold_seconds - quiet_seconds
         else:
             dispatch_burst = burst
             if elapsed_seconds >= max_wait:
                 dispatch_reason = "max_wait"
+            elif elapsed_seconds < required_elapsed:
+                dispatch_reason = "min_wait_timeout"
             elif unfinished:
                 dispatch_reason = "unfinished_hold_timeout"
             else:
@@ -151,7 +158,7 @@ def _enqueue_text_message(msg: dict[str, str]) -> None:
     if not from_user or not content:
         return
 
-    gap, idle, extra, max_wait = _merge_settings()
+    gap, idle, min_wait, extra, max_wait = _merge_settings()
     key = _merge_key(from_user, agent_id)
     now = time.time()
     stale_burst: _PendingUserBurst | None = None
@@ -182,6 +189,8 @@ def _enqueue_text_message(msg: dict[str, str]) -> None:
         version = burst.version
         elapsed_seconds = now - burst.first_at
         delay_seconds = idle + (extra if _looks_like_unfinished(content) else 0.0)
+        if elapsed_seconds < min_wait:
+            delay_seconds = max(delay_seconds, min_wait - elapsed_seconds)
         if elapsed_seconds + delay_seconds > max_wait:
             delay_seconds = max(0.05, max_wait - elapsed_seconds)
         part_count = len(burst.parts)
