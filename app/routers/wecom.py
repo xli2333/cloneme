@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -21,6 +23,180 @@ CALLBACK_PATH = settings.wecom_callback_path if settings.wecom_callback_path.sta
 
 _seen_messages: dict[str, float] = {}
 _seen_lock = threading.Lock()
+_pending_bursts: dict[str, "_PendingUserBurst"] = {}
+_pending_lock = threading.Lock()
+_burst_seq = 0
+_COMPLETE_ENDINGS = ("\u3002", "\uff01", "!", "\uff1f", "?", "\uff1b", ";")
+_HOLD_ENDINGS = ("\uff0c", ",", "\u3001", "\uff1a", ":", "-", "\u2014", "~", "\uff5e", "\u2026")
+_INCOMPLETE_SUFFIX_RE = re.compile(
+    r"(\u7136\u540e|\u8fd8\u6709|\u53e6\u5916|\u800c\u4e14|\u5e76\u4e14|\u4ee5\u53ca|\u5305\u62ec|\u7b49\u4e0b|\u7b49\u7b49|\u5148)$"
+)
+
+
+@dataclass(slots=True)
+class _PendingUserBurst:
+    burst_id: int
+    from_user: str
+    agent_id: str
+    parts: list[str]
+    first_at: float
+    last_at: float
+    version: int = 0
+
+
+def _safe_seconds(value: float, fallback: float, minimum: float) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = fallback
+    return max(minimum, parsed)
+
+
+def _merge_settings() -> tuple[float, float, float, float]:
+    gap = _safe_seconds(settings.wecom_merge_burst_gap_seconds, 6.0, 0.2)
+    idle = _safe_seconds(settings.wecom_merge_idle_seconds, 1.2, 0.2)
+    extra = _safe_seconds(settings.wecom_merge_incomplete_extra_seconds, 1.0, 0.0)
+    max_wait = _safe_seconds(settings.wecom_merge_max_wait_seconds, 10.0, idle)
+    return gap, idle, extra, max_wait
+
+
+def _merge_key(from_user: str, agent_id: str) -> str:
+    return f"{agent_id}:{from_user.lower()}"
+
+
+def _looks_like_unfinished(text: str) -> bool:
+    value = text.strip()
+    if not value:
+        return True
+    if len(value) <= 2:
+        return True
+    if value.endswith(_COMPLETE_ENDINGS):
+        return False
+    if value.endswith(_HOLD_ENDINGS):
+        return True
+    if _INCOMPLETE_SUFFIX_RE.search(value):
+        return True
+    return bool(len(value) < 8 and not re.search(r"[\u3002\uff01\uff1f!\?\uff1b;]$", value))
+
+
+def _dispatch_user_burst(burst: _PendingUserBurst, reason: str) -> None:
+    merged_content = "\n".join([x.strip() for x in burst.parts if x.strip()]).strip()
+    if not merged_content:
+        return
+    logger.info(
+        "wecom_merge_flush from_user=%s agent_id=%s parts=%s reason=%s chars=%s",
+        burst.from_user,
+        burst.agent_id,
+        len(burst.parts),
+        reason,
+        len(merged_content),
+    )
+    _handle_text_message(
+        {
+            "FromUserName": burst.from_user,
+            "AgentID": burst.agent_id,
+            "Content": merged_content,
+        }
+    )
+
+
+def _schedule_burst_flush(key: str, burst_id: int, version: int, delay_seconds: float) -> None:
+    timer = threading.Timer(max(0.05, delay_seconds), _flush_burst_if_ready, args=(key, burst_id, version))
+    timer.daemon = True
+    timer.start()
+
+
+def _flush_burst_if_ready(key: str, burst_id: int, version: int) -> None:
+    _, idle, extra, max_wait = _merge_settings()
+    now = time.time()
+    dispatch_burst: _PendingUserBurst | None = None
+    dispatch_reason = ""
+    reschedule_seconds: float | None = None
+
+    with _pending_lock:
+        burst = _pending_bursts.get(key)
+        if burst is None or burst.burst_id != burst_id or burst.version != version:
+            return
+        quiet_seconds = now - burst.last_at
+        elapsed_seconds = now - burst.first_at
+        last_text = burst.parts[-1] if burst.parts else ""
+        unfinished = _looks_like_unfinished(last_text)
+        hold_seconds = idle + (extra if unfinished else 0.0)
+
+        if quiet_seconds < hold_seconds and elapsed_seconds < max_wait:
+            reschedule_seconds = hold_seconds - quiet_seconds
+        else:
+            dispatch_burst = burst
+            if elapsed_seconds >= max_wait:
+                dispatch_reason = "max_wait"
+            elif unfinished:
+                dispatch_reason = "unfinished_hold_timeout"
+            else:
+                dispatch_reason = "idle"
+            _pending_bursts.pop(key, None)
+
+    if reschedule_seconds is not None:
+        _schedule_burst_flush(key, burst_id, version, reschedule_seconds)
+        return
+    if dispatch_burst is not None:
+        _dispatch_user_burst(dispatch_burst, dispatch_reason)
+
+
+def _enqueue_text_message(msg: dict[str, str]) -> None:
+    global _burst_seq
+
+    from_user = msg.get("FromUserName", "").strip()
+    content = msg.get("Content", "").strip()
+    agent_id = msg.get("AgentID", "").strip() or str(settings.wecom_agent_id)
+    if not from_user or not content:
+        return
+
+    gap, idle, extra, max_wait = _merge_settings()
+    key = _merge_key(from_user, agent_id)
+    now = time.time()
+    stale_burst: _PendingUserBurst | None = None
+
+    with _pending_lock:
+        burst = _pending_bursts.get(key)
+        if burst and (now - burst.last_at) > gap:
+            stale_burst = burst
+            _pending_bursts.pop(key, None)
+            burst = None
+        if burst is None:
+            _burst_seq += 1
+            burst = _PendingUserBurst(
+                burst_id=_burst_seq,
+                from_user=from_user,
+                agent_id=agent_id,
+                parts=[],
+                first_at=now,
+                last_at=now,
+                version=0,
+            )
+            _pending_bursts[key] = burst
+
+        burst.parts.append(content)
+        burst.last_at = now
+        burst.version += 1
+        burst_id = burst.burst_id
+        version = burst.version
+        elapsed_seconds = now - burst.first_at
+        delay_seconds = idle + (extra if _looks_like_unfinished(content) else 0.0)
+        if elapsed_seconds + delay_seconds > max_wait:
+            delay_seconds = max(0.05, max_wait - elapsed_seconds)
+        part_count = len(burst.parts)
+
+    if stale_burst is not None:
+        _dispatch_user_burst(stale_burst, "gap")
+
+    logger.info(
+        "wecom_merge_enqueue from_user=%s agent_id=%s parts=%s delay=%.2fs",
+        from_user,
+        agent_id,
+        part_count,
+        delay_seconds,
+    )
+    _schedule_burst_flush(key, burst_id, version, delay_seconds)
 
 
 def _validate_crypto_settings() -> None:
@@ -256,7 +432,7 @@ async def receive_callback(
 
     msg_type = msg.get("MsgType", "").lower()
     if msg_type == "text":
-        background_tasks.add_task(_handle_text_message, msg)
+        background_tasks.add_task(_enqueue_text_message, msg)
     else:
         logger.info("wecom skip msg_type=%s", msg_type or "unknown")
 

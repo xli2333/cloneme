@@ -42,6 +42,18 @@ class Settings:
     wecom_callback_path: str = field(
         default_factory=lambda: os.getenv("WECOM_CALLBACK_PATH", "/wecom/callback").strip()
     )
+    wecom_merge_burst_gap_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WECOM_MERGE_BURST_GAP_SECONDS", "6.0"))
+    )
+    wecom_merge_idle_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WECOM_MERGE_IDLE_SECONDS", "1.2"))
+    )
+    wecom_merge_incomplete_extra_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WECOM_MERGE_INCOMPLETE_EXTRA_SECONDS", "1.0"))
+    )
+    wecom_merge_max_wait_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WECOM_MERGE_MAX_WAIT_SECONDS", "10.0"))
+    )
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip())
     gemini_pro_model: str = field(

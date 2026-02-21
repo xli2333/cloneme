@@ -91,8 +91,6 @@ def _coerce_candidates_from_text(text: str) -> list[dict[str, Any]]:
         if len(line) > 44:
             line = line[:44].rstrip("。！？!?，,") + "…"
         bubbles.append(line)
-        if len(bubbles) >= 3:
-            break
 
     if not bubbles:
         bubbles = [plain[:24].strip() or "我在"]
@@ -271,14 +269,13 @@ class GenerationService:
                 break
 
         if status_update:
-            bubble_min, bubble_target, bubble_max = 2, 3, 6
+            bubble_min, bubble_target = 2, 3
         elif question_like:
-            bubble_min, bubble_target, bubble_max = 1, 2, 4
+            bubble_min, bubble_target = 1, 2
         else:
-            bubble_min, bubble_target, bubble_max = 1, 2, 5
+            bubble_min, bubble_target = 1, 2
         if assistant_run >= 2:
-            bubble_target = min(6, bubble_target + 1)
-            bubble_max = min(8, bubble_max + 1)
+            bubble_target += 1
 
         return {
             "focus_terms": focus_terms,
@@ -290,7 +287,6 @@ class GenerationService:
             "bubble_hint": {
                 "min": bubble_min,
                 "target": bubble_target,
-                "max": bubble_max,
             },
         }
 
@@ -456,7 +452,7 @@ class GenerationService:
 请输出 JSON:
 {{
   "candidate_count": 10-20,
-  "bubble_count": 1-8,
+  "bubble_count": ">=1（不设上限，按表达完整度决定；完整就停止）",
   "length_targets": [每条目标字数],
   "tone_tags": ["确认","安抚","轻松","追问"中的若干],
   "should_use_nickname": true/false,
@@ -501,7 +497,7 @@ class GenerationService:
 历史相似片段原文：{json.dumps(segments, ensure_ascii=False)}
 长期人格：{json.dumps(persona, ensure_ascii=False)}
 
-请生成 {candidate_count} 组候选，每组 1-8 条气泡（按短期语境决定，可一条也可多条连发）：
+请生成 {candidate_count} 组候选，每组气泡条数按表达完整度决定（>=1，不设上限）；若你判断还没说完整，就继续补充下一条气泡；当你判断已回复完整时立即停止，不要为了凑条数继续发：
 {{
   "candidates": [
     {{"bubbles": ["文本1","文本2"], "strategy": "8字内策略说明"}}
@@ -653,12 +649,11 @@ class GenerationService:
         hint = (frame or {}).get("bubble_hint", {})
         bubble_target = float(hint.get("target", preference.get("multi_bubble", {}).get("default_count", 2.0)))
         bubble_min = float(hint.get("min", 1))
-        bubble_max = float(hint.get("max", 6))
         n = float(len(bubbles))
         if n < bubble_min:
             bubble_score = max(0.0, 1.0 - (bubble_min - n) / max(1.0, bubble_min))
-        elif n > bubble_max:
-            bubble_score = max(0.0, 1.0 - (n - bubble_max) / max(1.0, bubble_max))
+        elif n >= bubble_target:
+            bubble_score = 1.0
         else:
             bubble_score = 1.0 - min(abs(n - bubble_target) / max(2.0, bubble_target), 1.0)
 
